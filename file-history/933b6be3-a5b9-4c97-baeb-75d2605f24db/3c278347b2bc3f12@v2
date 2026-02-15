@@ -1,0 +1,122 @@
+name: Deploy API(Production)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+env:
+  TZ: Asia/Tokyo
+  NODE_VERSION: 22.14.0
+
+  # common env
+  ENABLE_PLAYGROUND: "false"
+  APP_ENV: "production"
+  COOKIE_UTAGE_DOMAIN: "utage3.com"
+  API_ORIGIN: "https://api.utage3.com"
+  WEB_ORIGIN: "https://utage3.com"
+  SENTRY_DSN: ${{ secrets.SENTRY_DSN_BACKEND }}
+  SENTRY_ENVIRONMENT: "production"
+  LOG_LEVEL: "info"
+  SIGNAGE_JWT_SECRET: ${{ secrets.SIGNAGE_JWT_SECRET }}
+
+  # for Google Cloud
+  WORKLOAD_IDENTITY_PROVIDER: "projects/1010542792368/locations/global/workloadIdentityPools/github-oidc/providers/github-identity-provider"
+  SERVICE_ACCOUNT: "github-service-account@utage3.iam.gserviceaccount.com"
+  LOCATION: "asia-northeast1"
+  ARTIFACT_REGISTRY_HOST: "asia-northeast1-docker.pkg.dev"
+  REPOSITORY: "utage3/utage3"
+  SERVICE: "api"
+
+  # for LINE
+  AUTH_LINE_CLIENT_ID: 2004883870
+  AUTH_LINE_CLIENT_SECRET: ${{ secrets.PRODUCTION_AUTH_LINE_CLIENT_SECRET }}
+
+  # for fincode
+  FINCODE_SECRET_KEY: ${{ secrets.PRODUCTION_FINCODE_SECRET_KEY }}
+
+  # for DB
+  DATABASE_URL: ${{ secrets.PRODUCTION_DB_URL }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker Build and Push
+        uses: ./.github/actions/docker-build-and-push
+        id: app
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account_address: ${{ env.SERVICE_ACCOUNT }}
+          gar_host: ${{ env.ARTIFACT_REGISTRY_HOST }}
+          repository: ${{ env.REPOSITORY }}/${{ env.SERVICE }}
+          app: ${{ env.SERVICE }}
+          file: ./packages/backend/Dockerfile
+          context: .
+          build_args: |
+            APP_ENV=${{ env.APP_ENV }}
+            BUILD_ID=${{ github.sha }}
+            ENABLE_PLAYGROUND=${{ env.ENABLE_PLAYGROUND }}
+            COOKIE_UTAGE_DOMAIN=${{ env.COOKIE_UTAGE_DOMAIN }}
+            API_ORIGIN=${{ env.API_ORIGIN }}
+            WEB_ORIGIN=${{ env.WEB_ORIGIN }}
+            SENTRY_DSN=${{ env.SENTRY_DSN }}
+            SENTRY_ENVIRONMENT=${{ env.SENTRY_ENVIRONMENT }}
+            DATABASE_URL=${{ env.DATABASE_URL }}
+            AUTH_LINE_CLIENT_ID=${{ env.AUTH_LINE_CLIENT_ID }}
+            AUTH_LINE_CLIENT_SECRET=${{ env.AUTH_LINE_CLIENT_SECRET }}
+            FINCODE_SECRET_KEY=${{ env.FINCODE_SECRET_KEY }}
+            LOG_LEVEL=${{ env.LOG_LEVEL }}
+            SIGNAGE_JWT_SECRET=${{ env.SIGNAGE_JWT_SECRET }}
+
+      - name: Deploy to Cloud Run
+        uses: ./.github/actions/deployment
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account_address: ${{ env.SERVICE_ACCOUNT }}
+          service_name: ${{ env.SERVICE }}
+          region: ${{ env.LOCATION }}
+          image: ${{ steps.app.outputs.tags }}
+          no_traffic: false
+          env_vars: |
+            APP_ENV=${{ env.APP_ENV }}
+            BUILD_ID=${{ github.sha }}
+            ENABLE_PLAYGROUND=${{ env.ENABLE_PLAYGROUND }}
+            COOKIE_UTAGE_DOMAIN=${{ env.COOKIE_UTAGE_DOMAIN }}
+            API_ORIGIN=${{ env.API_ORIGIN }}
+            WEB_ORIGIN=${{ env.WEB_ORIGIN }}
+            SENTRY_DSN=${{ env.SENTRY_DSN }}
+            SENTRY_ENVIRONMENT=${{ env.SENTRY_ENVIRONMENT }}
+            DATABASE_URL=${{ env.DATABASE_URL }}
+            AUTH_LINE_CLIENT_ID=${{ env.AUTH_LINE_CLIENT_ID }}
+            AUTH_LINE_CLIENT_SECRET=${{ env.AUTH_LINE_CLIENT_SECRET }}
+            FINCODE_SECRET_KEY=${{ env.FINCODE_SECRET_KEY }}
+            LOG_LEVEL=${{ env.LOG_LEVEL }}
+            SIGNAGE_JWT_SECRET=${{ env.SIGNAGE_JWT_SECRET }}
+
+      - name: Revision to Latest
+        run: |
+          gcloud run services update-traffic ${{ env.SERVICE }} --region ${{ env.LOCATION }} --to-latest
+
+      - name: Slack Notification(Success)
+        uses: ./.github/actions/slack-notification
+        if: success()
+        with:
+          webhook_url: ${{ secrets.SLACK_NOTIFICATION_WEBHOOK_URL }}
+          title: "[Deploy] Production API"
+          message: "Deployed to Cloud Run successfully!"
+
+      - name: Slack Notification(Failure)
+        uses: ./.github/actions/slack-notification
+        if: failure()
+        with:
+          webhook_url: ${{ secrets.SLACK_NOTIFICATION_WEBHOOK_URL }}
+          title: "[Deploy] Production API"
+          message: "Failed to deploy to Cloud Run"

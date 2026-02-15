@@ -1,0 +1,128 @@
+# データベースマイグレーション手順書
+
+本プロジェクトでは、CIによる自動マイグレーションではなく、手動でマイグレーションを実行する運用としています。
+マイグレーション実行前にチームへ共有し、レビューを受けてから適用してください。
+
+## スキーマ管理の方針
+
+本プロジェクトでは Node.js backend (Prisma) と Go backend (psqldef) の2つのバックエンドが同じ PostgreSQL データベースを共有しています。
+
+**スキーマ変更の唯一のツールは psqldef (Go backend) です。**
+
+- **psqldef** (`packages/api/internal/db/schema.sql`): スキーマの Source of Truth。実際のDBへのマイグレーションはこちらで行う
+- **Prisma** (`packages/backend/prisma/schema.prisma`): 型生成のためにスキーマを同期する。`prisma generate` でクライアント型を再生成するが、`prisma migrate deploy` は使わない
+
+### スキーマ変更の全体フロー
+
+1. `packages/api/internal/db/schema.sql` を編集し、PRを出す
+2. `packages/backend/prisma/schema.prisma` も同じ変更に合わせて更新（同一PRまたは別PR）
+3. コードレビューを受けてPRをマージ
+4. チームに「今からマイグレーションを実行します」と共有
+5. 対象環境に接続し、dry-run で差分を確認（PRの変更内容と一致するか）
+6. マイグレーションを適用
+7. `pnpm --filter backend prisma:generate` で Prisma クライアントを再生成
+8. チームに完了を報告
+
+> 同じDBに対して2つのマイグレーションツールが競合するのを防ぐため、実際のDB変更は psqldef に統一しています。
+
+## dry-run とは
+
+psqldef の `--dry-run` オプションは、実際にDBを変更せずに「どのようなDDLが実行されるか」を表示します。
+PRで確認したスキーマ変更が、実際のDBに対しても同じ差分になっているかを確認するための安全策です。
+
+- 差分がない場合: 何も表示されない（DBが既にスキーマと一致している）
+- 差分がある場合: 実行予定の `ALTER TABLE` や `CREATE TABLE` などのDDLが表示される
+
+## 前提条件
+
+### 必要なツール
+
+- **Cloud SQL Proxy**: リモート環境のCloud SQLに接続するために必要
+  - https://cloud.google.com/sql/docs/postgres/connect-instance-auth-proxy
+- **psqldef** (Go backend): `go tool psqldef` で利用可能（Go 1.24+）
+
+### Cloud SQL接続情報
+
+| 環境 | インスタンス | サービスアカウント |
+|------|-------------|-------------------|
+| Dev | `utage3-dev:asia-northeast1:utage3` | `github-service-account@utage3-dev.iam.gserviceaccount.com` |
+| Production | `utage3:asia-northeast1:utage3` | `github-service-account@utage3.iam.gserviceaccount.com` |
+
+## ローカル環境
+
+```bash
+cd packages/backend
+docker compose up -d  # PostgreSQL起動
+
+cd packages/api
+make migrate
+```
+
+デフォルトでは `localhost:5432` の `utage3` データベースに接続します。
+
+## Dev環境
+
+### 1. Cloud SQL Proxyの起動
+
+```bash
+# GCPの認証
+gcloud auth login
+
+# Cloud SQL Proxy起動
+cloud-sql-proxy utage3-dev:asia-northeast1:utage3 --port=15432
+```
+
+### 2. dry-runで確認
+
+マイグレーション適用前に必ずdry-runで差分を確認してください。
+
+```bash
+cd packages/api
+make migrate POSTGRES_HOST=localhost POSTGRES_USER=<user> POSTGRES_PASSWORD=<password> EXTRA_ARGS="--dry-run"
+```
+
+### 3. 適用
+
+dry-runの結果を確認し、問題なければ `--dry-run` を外して実行します。
+
+```bash
+cd packages/api
+make migrate POSTGRES_HOST=localhost POSTGRES_USER=<user> POSTGRES_PASSWORD=<password>
+```
+
+## Production環境
+
+### 1. Cloud SQL Proxyの起動
+
+```bash
+# GCPの認証
+gcloud auth login
+
+# Cloud SQL Proxy起動
+cloud-sql-proxy utage3:asia-northeast1:utage3 --port=15432
+```
+
+### 2. dry-runで確認（必須）
+
+本番環境では必ずdry-runを行い、チームメンバーにレビューしてもらってください。
+
+```bash
+cd packages/api
+make migrate POSTGRES_HOST=localhost POSTGRES_USER=<user> POSTGRES_PASSWORD=<password> EXTRA_ARGS="--dry-run"
+```
+
+### 3. レビュー・適用
+
+dry-runの結果をチームに共有し、レビューを受けてから適用します。
+
+```bash
+cd packages/api
+make migrate POSTGRES_HOST=localhost POSTGRES_USER=<user> POSTGRES_PASSWORD=<password>
+```
+
+## 運用ルール
+
+1. マイグレーション実行前にチームへ共有する
+2. dry-runで差分を確認する
+3. Production環境はレビューを受けてから適用する
+4. マイグレーション完了後、結果をチームに報告する

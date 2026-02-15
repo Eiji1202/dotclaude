@@ -1,0 +1,137 @@
+import type { Request, Response } from "express";
+import type { ContextInject } from "~/context";
+import { PackDataSource } from "~/usecase/pack";
+import { repository, sideEffect } from "~/context";
+import { config } from "~/utils/config";
+import { prisma } from "~/utils/prisma";
+import {
+  getFincodePaymentByPayPayStatus,
+  isFincodeError,
+} from "~/utils/fincode";
+import { toJST } from "~/utils/date";
+import { assertExists } from "~/utils/assetExists";
+import { randomUUID } from "node:crypto";
+import { logger } from "~/utils/logger";
+
+const context: ContextInject = {
+  repository,
+  sideEffect,
+  config,
+};
+
+export async function payment(req: Request, res: Response) {
+  const { paymentTransactionId } = req.body;
+
+  const paymentTransaction = await prisma.paymentTransaction.findUnique({
+    where: { id: paymentTransactionId },
+  });
+
+  if (paymentTransaction == null) {
+    return res.status(404).json({ message: "決済が見つかりません" });
+  }
+
+  const pairing = await prisma.pairing.findFirst({
+    where: {
+      paymentTransactionId: paymentTransaction.id,
+    },
+  });
+
+  const uid = pairing?.uid;
+
+  if (!pairing || uid == null) {
+    return res.status(404).json({ message: "ペアリングが見つかりません" });
+  }
+
+  try {
+    const pd = new PackDataSource({
+      ...context,
+      uid,
+    });
+
+    // 注文がすでに決済済みの場合は early return
+    if (paymentTransaction.status === "CAPTURED") {
+      return res.status(200).json({ message: "決済がすでに完了しています" });
+    }
+
+    // fincode に決済情報を取得しにいく
+    const fincodePayment = await getFincodePaymentByPayPayStatus(
+      paymentTransaction.orderId,
+    );
+
+    // 決済が成功してない場合、エラー
+    if (fincodePayment.status !== "CAPTURED") {
+      await prisma.paymentTransaction.update({
+        where: { id: paymentTransaction.id },
+        data: {
+          status: fincodePayment.status,
+          updatedAt: toJST().toDate(),
+        },
+      });
+
+      return res
+        .status(400)
+        .json({ message: "決済が未処理、またはエラーです" });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // 配布済みかどうかチェック
+      const alreadyDistributedCardCount = await tx.userTradingCard.count({
+        where: { paymentTransactionId: paymentTransaction.id },
+      });
+      if (alreadyDistributedCardCount > 0)
+        return res
+          .status(200)
+          .json({ message: "カードがすでに配布されています" });
+
+      // パックを取得
+      const pack = await repository.pack.findUniquePack(
+        paymentTransaction.packId,
+      );
+      assertExists(pack, "Pack");
+
+      // カードを抽選
+      const selectedCardIds = await pd.selectRandomTradingCardIdsByPackId(
+        "payment",
+        paymentTransaction.packId,
+        paymentTransaction.quantity * pack.paymentGrantCardQuantity,
+      );
+
+      // カードを配布
+      await tx.userTradingCard.createMany({
+        data: selectedCardIds.map((c) => {
+          const id = randomUUID().replace(/-/g, "");
+          return {
+            id,
+            userId: uid,
+            tradingCardId: c,
+            paymentTransactionId: paymentTransaction.id,
+            pairingSessionId: pairing.pairingSessionId,
+          };
+        }),
+      });
+
+      // 決済状態を更新
+      await tx.paymentTransaction.update({
+        where: { id: paymentTransaction.id },
+        data: {
+          status: "CAPTURED",
+          capturedAt: toJST().toDate(),
+        },
+      });
+
+      return res.status(200).json({ message: "決済が完了しました" });
+    });
+  } catch (error) {
+    if (isFincodeError(error)) {
+      logger.error("failed to pair payment", error, {
+        orderId: paymentTransaction.orderId,
+        paymentTransaction,
+        fincodeError: error.errors.at(-1)?.error_message,
+      });
+
+      return res.status(400).json({ message: "決済が失敗しています" });
+    }
+
+    return res.status(400).json({ message: "決済が失敗しています" });
+  }
+}

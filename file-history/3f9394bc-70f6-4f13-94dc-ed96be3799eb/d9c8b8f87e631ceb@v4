@@ -1,0 +1,20 @@
+import type { TradingCard } from "@/prisma/generated";
+
+export function createTradingCardMock(
+  overrides: Partial<TradingCard> = {},
+): TradingCard {
+  return {
+    id: "tc-1",
+    name: "tc-name",
+    imageURL: "tc-image.jpg",
+    backImageURL: "tc-back-image.jpg",
+    usedImageURL: "tc-used-image.jpg",
+    benefitId: null,
+    group: null,
+    revealedAt: new Date(),
+    tenantId: "default-tenant",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}

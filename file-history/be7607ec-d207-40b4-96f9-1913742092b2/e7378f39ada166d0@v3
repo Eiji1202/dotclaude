@@ -1,0 +1,47 @@
+import type { Prisma } from "@/prisma/generated";
+import { prisma } from "~/utils/prisma";
+import { defaultOption, type Option } from "./utils";
+
+export class QuizRepository {
+  public async withTransaction<T>(
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  ) {
+    return prisma.$transaction(fn);
+  }
+
+  public async findUniqueQuizSurveyByUserIdAndIdentifier(
+    args: {
+      userId: string;
+      identifier: string;
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { userId, identifier } = args;
+
+    return tx.quizSurvey.findUnique({
+      where: {
+        userId_identifier: { userId, identifier },
+      },
+    });
+  }
+
+  public async createQuizSurvey(
+    args: {
+      userId: string;
+      identifier: string;
+      gender: string;
+      age: number;
+      prefectureCode: string;
+      tenantId: number;
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { userId, identifier, gender, age, prefectureCode, tenantId } = args;
+
+    return tx.quizSurvey.create({
+      data: { userId, identifier, gender, age, prefectureCode, tenantId },
+    });
+  }
+}

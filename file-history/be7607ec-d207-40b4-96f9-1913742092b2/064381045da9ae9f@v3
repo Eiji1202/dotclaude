@@ -1,0 +1,14 @@
+import type { UserCertificate } from "@/prisma/generated";
+
+export function createUserCertificateMock(
+  overrides: Partial<UserCertificate> = {},
+): UserCertificate {
+  return {
+    id: 1,
+    userId: "user-id",
+    imageURL: "user-certificate.jpg",
+    checkinTransactionId: 1,
+    tenantId: 1,
+    ...overrides,
+  };
+}

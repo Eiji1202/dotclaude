@@ -1,0 +1,291 @@
+CREATE TABLE tenant (
+  id SERIAL PRIMARY KEY,
+  firebase_tenant_id TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE event (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  start_date TIMESTAMP(3) NOT NULL,
+  header_image_url TEXT NOT NULL DEFAULT '',
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX event_tenant_id_idx ON event (tenant_id);
+
+CREATE TABLE event_setlist (
+  id SERIAL PRIMARY KEY,
+  event_id INTEGER NOT NULL REFERENCES event ON UPDATE CASCADE ON DELETE RESTRICT,
+  artist_name TEXT NOT NULL,
+  content TEXT NOT NULL,
+  apple_music_url TEXT,
+  spotify_url TEXT,
+  notification_duration INTEGER NOT NULL DEFAULT 0,
+  published_at TIMESTAMP(3),
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX event_setlist_tenant_id_idx ON event_setlist (tenant_id);
+
+CREATE TABLE pack (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  image_url TEXT NOT NULL,
+  cut_image_url TEXT NOT NULL DEFAULT '',
+  scrap_image_url TEXT NOT NULL DEFAULT '',
+  public BOOLEAN NOT NULL DEFAULT TRUE,
+  checkin_grant_card_quantity INTEGER NOT NULL DEFAULT 1,
+  payment_grant_card_quantity INTEGER NOT NULL DEFAULT 3,
+  banner_images TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
+  opening_video_type TEXT NOT NULL DEFAULT 'black',
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX pack_tenant_id_idx ON pack (tenant_id);
+
+CREATE TABLE pack_price (
+  id SERIAL PRIMARY KEY,
+  pack_id TEXT NOT NULL REFERENCES pack ON UPDATE CASCADE ON DELETE RESTRICT,
+  min_quantity INTEGER NOT NULL,
+  max_quantity INTEGER,
+  price INTEGER NOT NULL,
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX pack_price_tenant_id_idx ON pack_price (tenant_id);
+
+CREATE TABLE physical_pack (
+  id SERIAL PRIMARY KEY,
+  event_id INTEGER NOT NULL REFERENCES event ON UPDATE CASCADE ON DELETE RESTRICT,
+  pack_id TEXT NOT NULL REFERENCES pack ON UPDATE CASCADE ON DELETE RESTRICT,
+  physical_id TEXT NOT NULL,
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX physical_pack_event_id_pack_id_physical_id_key ON physical_pack (event_id, pack_id, physical_id);
+CREATE INDEX physical_pack_tenant_id_idx ON physical_pack (tenant_id);
+
+CREATE TABLE trading_card_benefit (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  image_url TEXT NOT NULL,
+  exchange_method TEXT NOT NULL,
+  expiration_date_for_user TEXT NOT NULL,
+  expiration_date TIMESTAMP(3) NOT NULL,
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX trading_card_benefit_tenant_id_idx ON trading_card_benefit (tenant_id);
+
+CREATE TABLE trading_card (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  image_url TEXT NOT NULL,
+  back_image_url TEXT NOT NULL,
+  used_image_url TEXT,
+  benefit_id INTEGER REFERENCES trading_card_benefit ON UPDATE CASCADE ON DELETE SET NULL,
+  "group" TEXT,
+  revealed_at TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP,
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX trading_card_tenant_id_idx ON trading_card (tenant_id);
+
+CREATE TABLE pack_trading_card_relation (
+  id SERIAL PRIMARY KEY,
+  pack_id TEXT NOT NULL REFERENCES pack ON UPDATE CASCADE ON DELETE RESTRICT,
+  trading_card_id TEXT NOT NULL REFERENCES trading_card ON UPDATE CASCADE ON DELETE RESTRICT,
+  chance DOUBLE PRECISION NOT NULL,
+  paid_chance DOUBLE PRECISION NOT NULL DEFAULT 0,
+  max_count INTEGER,
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX pack_trading_card_relation_pack_id_trading_card_id_key ON pack_trading_card_relation (pack_id, trading_card_id);
+CREATE INDEX pack_trading_card_relation_tenant_id_idx ON pack_trading_card_relation (tenant_id);
+
+CREATE TABLE certificate (
+  id SERIAL PRIMARY KEY,
+  image_url TEXT NOT NULL,
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX certificate_tenant_id_idx ON certificate (tenant_id);
+
+CREATE TABLE "user" (
+  id TEXT PRIMARY KEY,
+  name TEXT,
+  line_id TEXT UNIQUE,
+  email TEXT UNIQUE,
+  image_url TEXT NOT NULL,
+  nickname TEXT UNIQUE,
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX user_tenant_id_idx ON "user" (tenant_id);
+
+CREATE TYPE "CheckinCodeType" AS ENUM ('PER_EVENT', 'PER_USER');
+CREATE TYPE "CheckinGrantType" AS ENUM ('CHECKIN_GRANT_ALL', 'CHECKIN_GRANT_CERTIFICATE_ONLY');
+
+CREATE TABLE checkin_code (
+  id TEXT PRIMARY KEY,
+  event_id INTEGER NOT NULL REFERENCES event ON UPDATE CASCADE ON DELETE RESTRICT,
+  certificate_id INTEGER NOT NULL REFERENCES certificate ON UPDATE CASCADE ON DELETE RESTRICT,
+  pack_id TEXT NOT NULL REFERENCES pack ON UPDATE CASCADE ON DELETE RESTRICT,
+  type "CheckinCodeType" NOT NULL DEFAULT 'PER_USER',
+  grant_type "CheckinGrantType" NOT NULL DEFAULT 'CHECKIN_GRANT_ALL',
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX checkin_code_tenant_id_idx ON checkin_code (tenant_id);
+
+CREATE TABLE checkin_transaction (
+  id SERIAL PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES "user" ON UPDATE CASCADE ON DELETE RESTRICT,
+  event_id INTEGER NOT NULL REFERENCES event ON UPDATE CASCADE ON DELETE RESTRICT,
+  checkin_code_id TEXT NOT NULL REFERENCES checkin_code ON UPDATE CASCADE ON DELETE RESTRICT,
+  received_at TIMESTAMP(3) NOT NULL,
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX checkin_transaction_user_id_event_id_idx ON checkin_transaction (user_id, event_id);
+CREATE UNIQUE INDEX checkin_transaction_checkin_code_id_event_id_user_id_key ON checkin_transaction (checkin_code_id, event_id, user_id);
+CREATE INDEX checkin_transaction_tenant_id_idx ON checkin_transaction (tenant_id);
+
+CREATE TYPE "PaymentMethodType" AS ENUM ('CARD', 'PAYPAY', 'APPLEPAY', 'CAMPAIGN', 'PHYSICAL');
+CREATE TYPE "PaymentStatus" AS ENUM ('UNPROCESSED', 'CHECKED', 'AUTHORIZED', 'CAPTURED', 'CANCELED', 'AUTHENTICATED', 'AWAITING_CUSTOMER_PAYMENT', 'EXPIRED', 'FAILED');
+
+CREATE TABLE payment_method (
+  id SERIAL PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES "user" ON UPDATE CASCADE ON DELETE RESTRICT,
+  type "PaymentMethodType" NOT NULL,
+  card_id TEXT,
+  card_no TEXT,
+  card_brand TEXT,
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX payment_method_tenant_id_idx ON payment_method (tenant_id);
+
+CREATE TABLE payment_transaction (
+  id SERIAL PRIMARY KEY,
+  order_id TEXT NOT NULL UNIQUE,
+  access_id TEXT NOT NULL UNIQUE,
+  pack_id TEXT NOT NULL REFERENCES pack ON UPDATE CASCADE ON DELETE RESTRICT,
+  user_id TEXT NOT NULL REFERENCES "user" ON UPDATE CASCADE ON DELETE RESTRICT,
+  payment_method_id INTEGER NOT NULL REFERENCES payment_method ON UPDATE CASCADE ON DELETE RESTRICT,
+  quantity INTEGER NOT NULL,
+  total_price INTEGER NOT NULL,
+  status "PaymentStatus" NOT NULL,
+  reconciler_note TEXT,
+  captured_at TIMESTAMP(3),
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX payment_transaction_tenant_id_idx ON payment_transaction (tenant_id);
+
+CREATE TYPE pairing_status AS ENUM ('PENDING', 'USING', 'COMPLETED', 'CANCELED', 'EXPIRED');
+
+CREATE TABLE pairing (
+  id SERIAL PRIMARY KEY,
+  pairing_session_id TEXT NOT NULL UNIQUE,
+  device_id INTEGER NOT NULL,
+  code_hash TEXT NOT NULL,
+  status pairing_status NOT NULL DEFAULT 'PENDING',
+  uid TEXT REFERENCES "user" ON UPDATE CASCADE ON DELETE SET NULL,
+  token TEXT,
+  expires_at TIMESTAMP(3) NOT NULL,
+  claimed_at TIMESTAMP(3),
+  completed_at TIMESTAMP(3),
+  canceled_at TIMESTAMP(3),
+  payment_transaction_id INTEGER REFERENCES payment_transaction ON UPDATE CASCADE ON DELETE SET NULL,
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX pairing_device_id_created_at_idx ON pairing (device_id, created_at);
+CREATE INDEX pairing_tenant_id_idx ON pairing (tenant_id);
+
+CREATE TABLE user_trading_card (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES "user" ON UPDATE CASCADE ON DELETE RESTRICT,
+  trading_card_id TEXT NOT NULL REFERENCES trading_card ON UPDATE CASCADE ON DELETE RESTRICT,
+  checkin_transaction_id INTEGER REFERENCES checkin_transaction ON UPDATE CASCADE ON DELETE SET NULL,
+  payment_transaction_id INTEGER REFERENCES payment_transaction ON UPDATE CASCADE ON DELETE SET NULL,
+  pairing_session_id TEXT REFERENCES pairing(pairing_session_id) ON UPDATE CASCADE ON DELETE SET NULL,
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX user_trading_card_tenant_id_idx ON user_trading_card (tenant_id);
+
+CREATE TABLE trading_card_benefit_exchange_transaction (
+  id SERIAL PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES "user" ON UPDATE CASCADE ON DELETE RESTRICT,
+  user_trading_card_id TEXT NOT NULL REFERENCES user_trading_card(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  exchanged_at TIMESTAMP(3) NOT NULL,
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX trading_card_benefit_exchange_transaction_user_id_user_trading_card_id_key ON trading_card_benefit_exchange_transaction (user_id, user_trading_card_id);
+CREATE INDEX trading_card_benefit_exchange_transaction_tenant_id_idx ON trading_card_benefit_exchange_transaction (tenant_id);
+
+CREATE TABLE user_certificate (
+  id SERIAL PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES "user" ON UPDATE CASCADE ON DELETE RESTRICT,
+  image_url TEXT NOT NULL,
+  checkin_transaction_id INTEGER NOT NULL REFERENCES checkin_transaction ON UPDATE CASCADE ON DELETE RESTRICT,
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT
+);
+
+CREATE INDEX user_certificate_tenant_id_idx ON user_certificate (tenant_id);
+
+CREATE TABLE quiz_survey (
+  id SERIAL PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES "user" ON UPDATE CASCADE ON DELETE RESTRICT,
+  gender TEXT NOT NULL,
+  age INTEGER NOT NULL,
+  prefecture_code TEXT NOT NULL,
+  identifier TEXT NOT NULL,
+  tenant_id INTEGER NOT NULL REFERENCES tenant ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX quiz_survey_user_id_identifier_key ON quiz_survey (user_id, identifier);
+CREATE INDEX quiz_survey_tenant_id_idx ON quiz_survey (tenant_id);

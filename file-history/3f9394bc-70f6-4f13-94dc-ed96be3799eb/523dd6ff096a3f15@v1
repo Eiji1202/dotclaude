@@ -1,0 +1,17 @@
+import type { UserTradingCard } from "@/prisma/generated";
+
+export function createUserTradingCardMock(
+  overrides: Partial<UserTradingCard> = {},
+): UserTradingCard {
+  return {
+    id: "user-trading-card-id",
+    userId: "user-id",
+    tradingCardId: "trading-card-id",
+    pairingSessionId: null,
+    checkinTransactionId: null,
+    paymentTransactionId: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}

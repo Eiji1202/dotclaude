@@ -1,0 +1,23 @@
+import type { Pack } from "@/prisma/generated";
+
+export function createPackMock(overrides: Partial<Pack> = {}): Pack {
+  return {
+    id: "pack-id",
+    name: "テストパック",
+    public: true,
+    imageURL: "pack-image.jpg",
+    cutImageURL: "cut-image.jpg",
+    scrapImageURL: "scrap-image.jpg",
+    checkinGrantCardQuantity: 1,
+    paymentGrantCardQuantity: 3,
+    openingVideoType: "black",
+    bannerImages: [
+      "pack-image.jpg",
+      "banner-image01.jpg",
+      "banner-image02.jpg",
+    ],
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}

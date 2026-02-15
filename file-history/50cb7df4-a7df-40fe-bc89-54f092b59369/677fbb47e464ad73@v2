@@ -1,0 +1,305 @@
+import { GraphQLError } from "graphql/error";
+import type { ContextInject } from "~/context";
+import type {
+  CheckinConnectionMapper,
+  CheckinTransactionMapper,
+  EventMapper,
+  EventSetlistMapper,
+} from "~/graphql/event/schema.mappers";
+import type { PackMapper } from "~/graphql/pack/schema.mappers";
+import type { CheckinInput, InputMaybe } from "~/graphql/types.generated";
+import { generateUserCertificateImage } from "~/logic/generateUserCertificateImage";
+import { PackDataSource } from "~/usecase/pack";
+import { assertAuthenticated } from "~/utils/assertAuthenticated";
+import { assertExists } from "~/utils/assetExists";
+import { logger } from "~/utils/logger";
+
+export class EventDataSource {
+  private context: ContextInject;
+
+  public constructor(context: ContextInject) {
+    this.context = context;
+  }
+
+  // ユーザーのチェックイン履歴を取得
+  public async getCheckinTransactions(
+    first: InputMaybe<number>,
+    after: InputMaybe<string>,
+  ): Promise<CheckinConnectionMapper> {
+    const uid = assertAuthenticated(this.context.uid);
+    const repo = this.context.repository.event;
+
+    const firstNumber = first ?? 10;
+    const afterNumber = after ? Number(after) : undefined;
+    const checkinTransactions = await repo.findManyCheckinTransactionByUserId(
+      uid,
+      {
+        first: firstNumber,
+        after: afterNumber,
+      },
+    );
+
+    const totalCount = await repo.countCheckinTransactionByUserId(uid);
+    const hasNextPage = checkinTransactions.length > firstNumber;
+    const recordsToReturn = checkinTransactions.slice(0, firstNumber);
+
+    const edges = recordsToReturn.map((checkinTransaction) => {
+      return {
+        cursor: checkinTransaction.id.toString(),
+        node: {
+          ...checkinTransaction,
+          certificate: checkinTransaction.userCertificates[0] || null,
+          tradingCards: checkinTransaction.userTradingCards.map((userCard) => ({
+            ...userCard,
+            name: userCard.tradingCard.name,
+            imageURL: userCard.tradingCard.imageURL,
+            backImageURL: userCard.tradingCard.backImageURL,
+            usedImageURL: userCard.tradingCard.usedImageURL,
+          })),
+        },
+      };
+    });
+
+    const endCursor = edges[edges.length - 1]?.cursor ?? null;
+
+    return {
+      edges,
+      pageInfo: {
+        hasNextPage,
+        endCursor,
+      },
+      totalCount,
+    };
+  }
+
+  // パックID からイベントの取得
+  public async getEventsByPackId(packId: string): Promise<EventMapper[]> {
+    const checkinCodes =
+      await this.context.repository.event.findManyCheckinCodeByPackId(packId);
+    if (checkinCodes.length === 0) {
+      throw new GraphQLError("No checkin code found", {
+        extensions: { code: "NO_CHECKIN_CODE_FOUND" },
+      });
+    }
+
+    return Promise.all(
+      checkinCodes.map((checkinCode) => this.getEvent(checkinCode.eventId)),
+    );
+  }
+
+  // イベントの取得
+  public async getEvent(id: number): Promise<EventMapper> {
+    const event = await this.context.repository.event.findUniqueEvent(id);
+    assertExists(event, "Event");
+
+    return {
+      id: event.id,
+      name: event.name,
+      headerImageURL: event.headerImageURL,
+      startDate: event.startDate,
+      tenantId: event.tenantId,
+      createdAt: event.createdAt,
+      updatedAt: event.updatedAt,
+    };
+  }
+
+  // チェックインコードからパック情報を取得する。
+  public async getPackByCheckinCodeId(id: string): Promise<PackMapper> {
+    const repo = this.context.repository;
+    const checkinCode =
+      await repo.event.findUniqueCheckinCodeWithCertificate(id);
+    assertExists(checkinCode, "CheckinCode");
+
+    const pack = await repo.pack.findUniquePack(checkinCode.packId);
+    assertExists(pack, "Pack");
+
+    return pack;
+  }
+
+  // ユーザーの所有するデジタルパスからイベント情報を取得する。
+  public async getEventByUserCertificateId(id: number): Promise<EventMapper> {
+    const userCertificate =
+      await this.context.repository.event.findUniqueUserCertificateWithEvent(
+        id,
+      );
+    assertExists(userCertificate, "UserCertificate");
+
+    return userCertificate.checkinTransaction.event;
+  }
+
+  // セットリストを取得する
+  public async getSetLists(eventId: number): Promise<EventSetlistMapper[]> {
+    const result =
+      await this.context.repository.event.findManySetListByEventId(eventId);
+
+    return result.map((setlist) => ({
+      ...setlist,
+      publishedAt: setlist.publishedAt?.toISOString(),
+    }));
+  }
+
+  // 指定されたコードでイベントにチェックインする。
+  public async checkin(input: CheckinInput): Promise<CheckinTransactionMapper> {
+    const uid = assertAuthenticated(this.context.uid);
+    const repo = this.context.repository.event;
+    const sideEffect = this.context.sideEffect;
+
+    const user = await repo.findUniqueUser(uid);
+    assertExists(user, "User");
+
+    try {
+      return await repo.withTransaction(async (tx) => {
+        const checkinCode = await repo.findUniqueCheckinCodeWithCertificate(
+          input.code,
+          { tx },
+        );
+        assertExists(checkinCode, "CheckinCode");
+
+        // すでにイベントにチェックイン済みの場合、エラーを返す
+        const viewerCheckinCountByEvent =
+          await repo.countCheckinTransactionByEventIdAndUserId(
+            {
+              eventId: checkinCode.eventId,
+              userId: uid,
+            },
+            { tx },
+          );
+        if (viewerCheckinCountByEvent !== 0) {
+          logger.warn("Viewer already checked in", { uid, input });
+          throw new GraphQLError("Viewer already checked in", {
+            extensions: { code: "VIEWER_ALREADY_CHECKED_IN" },
+          });
+        }
+
+        // チェックインコードがユーザー毎に発行されてる場合、使用済みかどうかを確認する
+        if (checkinCode.type === "PER_USER") {
+          // 誰かが指定されたコードを使用済みの場合、エラーを返す
+          const checkinCountByCode = await repo.countCheckinTransactionByCode(
+            input.code,
+            { tx },
+          );
+          if (checkinCountByCode !== 0) {
+            logger.warn("Checkin code already used", { uid, input });
+            throw new GraphQLError("Already used checkin code", {
+              extensions: { code: "CHECKIN_CODE_ALREADY_USED" },
+            });
+          }
+        }
+
+        const now = sideEffect.clock().toDate();
+        const checkinTransaction = await repo.upsertCheckinTransaction(
+          {
+            checkinCodeId: checkinCode.id,
+            eventId: checkinCode.eventId,
+            userId: uid,
+            now,
+            tenantId: user.tenantId,
+          },
+          { tx },
+        );
+
+        const certificate = await (async () => {
+          // ALL もしくは CERTIFICATE_ONLY の場合、ユーザーの来場パス画像を生成する
+          if (
+            !["CHECKIN_GRANT_ALL", "CHECKIN_GRANT_CERTIFICATE_ONLY"].includes(
+              checkinCode.grantType,
+            )
+          )
+            return null;
+
+          const imageURL = await (async () => {
+            try {
+              return await generateUserCertificateImage({
+                context: this.context,
+                eventId: checkinCode.eventId,
+                imageURL: checkinCode.certificate.imageURL,
+                uid,
+                name: user.name ?? "",
+                icon: user.imageURL,
+              });
+            } catch (error) {
+              logger.error("failed to generate user certificate image", error, {
+                uid,
+                input,
+              });
+
+              // ユーザーの来場パス画像の生成に失敗した場合、元の来場パスの画像を設定して checkin できるようにする
+              return checkinCode.certificate.imageURL;
+            }
+          })();
+
+          return await repo.createUserCertificate(
+            {
+              checkinTransactionId: checkinTransaction.id,
+              userId: uid,
+              imageURL,
+              tenantId: user.tenantId,
+            },
+            { tx },
+          );
+        })();
+
+        const userTradingCards = await (async () => {
+          // ALL の場合、トレーディングカードを配布する
+          if (!["CHECKIN_GRANT_ALL"].includes(checkinCode.grantType)) return [];
+
+          // トレーディングカード受け取り
+          const packDataSource = new PackDataSource(this.context);
+          const pack = await this.context.repository.pack.findUniquePack(
+            checkinCode.packId,
+          );
+          assertExists(pack, "Pack");
+
+          // チェックイン特典として1チェックインにつきパックのカード配布数枚のカードを配布する
+          const selectedCardIds =
+            await packDataSource.selectRandomTradingCardIdsByPackId(
+              "checkin",
+              checkinCode.packId,
+              pack.checkinGrantCardQuantity,
+            );
+
+          await repo.createManyUserTradingCard(
+            {
+              uid,
+              checkinTransactionId: checkinTransaction.id,
+              tradingCardIds: selectedCardIds,
+              tenantId: user.tenantId,
+            },
+            { tx },
+          );
+
+          return await repo.findManyUserTradingCard(
+            {
+              checkinTransactionId: checkinTransaction.id,
+            },
+            { tx },
+          );
+        })();
+
+        return {
+          ...checkinTransaction,
+          certificate,
+          tradingCards: userTradingCards.map((card) => {
+            return {
+              ...card,
+              name: card.tradingCard.name,
+              imageURL: card.tradingCard.imageURL,
+              backImageURL: card.tradingCard.backImageURL,
+              usedImageURL: card.tradingCard.usedImageURL,
+            };
+          }),
+        } satisfies CheckinTransactionMapper;
+      });
+    } catch (error) {
+      logger.error("failed to checkin", error, { uid, input });
+
+      if (error instanceof GraphQLError) {
+        throw error;
+      }
+
+      throw new GraphQLError("Failed to checkin", {
+        extensions: { code: "INTERNAL_SERVER_ERROR" },
+      });
+    }
+  }
+}

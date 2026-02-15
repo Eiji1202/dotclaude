@@ -1,0 +1,197 @@
+# マルチテナントアーキテクチャ デザインドキュメント
+
+## 1. 概要 (Overview)
+
+- **目的**: 本プロジェクトは、単一のプロダクト基盤を複数の独立したブランドへ横展開可能にするためのマルチテナント化対応である。データベースレベルでテナント間のデータを厳格に分離し、安全かつスケーラブルなアーキテクチャを構築することを目的とする。
+- **背景**: 現在のシステムはシングルテナントを前提としており、複数の IP ブランドが混ざる状態でしかサービスを展開できず、クライアント獲得の障害になっている。
+- **ドキュメントのステータス**: `[Approved]`
+
+---
+
+## 2. ゴールと非ゴール (Goals and Non-Goals)
+
+### 2.1 ゴール (必須条件)
+
+- [x] **データの厳格な分離**: アプリケーション層のバグが原因で、他テナントのデータが絶対に漏洩しないこと。
+- [x] **透過的な実装**: アプリケーション開発者が、テナント分離を意識せずにビジネスロジックの実装に集中できること。
+- [x] **開発効率の向上**: 新規 IP の立ち上げを、DB へのレコード追加とドメイン設定のみで迅速に行えるようにする。
+- [x] **テナントごとの認証**: IP ごとに独立した認証（Firebase Tenant）を提供し、ユーザーベースを分離する。
+
+### 2.2 非ゴール (スコープ外)
+
+- **テナントごとの完全なインフラ分離**: テナントごとに異なる DB インスタンスや、マイクロサービスをデプロイすることはスコープ外とする。インフラは全テナントで共有する。
+- **テナントごとの UI 完全カスタマイズ**: テナントごとに UI テーマやレイアウトを大幅に変更する機能はスコープ外とする。コンポーネントやアセットの差し替えに留める。今後、Feature Flag の導入によるテナントごとの機能切り替えは想定する。
+- **テナントごとのパフォーマンス保証**: 特定のテナントに占有リソースを割り当てることはしない。リソースは全テナントで共有する。
+
+---
+
+## 3. システム設計 (System Design)
+
+### 3.1 全体アーキテクチャ
+
+テナントの識別はサブドメイン等で行い（提供方式は別途確定）、DB レベルでのデータ分離は**PostgreSQL の Row Level Security (RLS)**を主軸とする。
+
+1.  **アクセス**: ユーザーがテナント固有のアプリ（例: `artist-a.utage3.com`）にアクセス。
+2.  **テナント特定**: フロントエンドがテナント固有の Firebase Tenant ID を使用して Firebase Auth を初期化。
+3.  **認証**: Firebase Auth で認証し、`firebase.tenant` クレームを含む JWT を取得。
+4.  **API リクエスト**: フロントエンドは API リクエストのヘッダーに JWT（セッション Cookie）と `X-Tenant-ID` ヘッダーを含める。
+5.  **テナントコンテキスト設定**: バックエンドのミドルウェアがテナント ID を解決する。
+    - **認証ありエンドポイント**: JWT を検証し、`firebase.tenant` クレームから Firebase Tenant ID を取得（最優先）。
+    - **認証なしエンドポイント（公開API）**: `X-Tenant-ID` リクエストヘッダーから Firebase Tenant ID を取得。
+    - Tenant テーブルで Firebase Tenant ID → 内部 `tenant_id` に変換後、DB コネクションのスコープ内で `SET LOCAL app.current_tenant_id = '...'` を実行し、RLS を有効化する。
+
+#### 3.1.1. テナント ID 伝搬方式
+
+**方式: JWT クレーム + リクエストヘッダーのハイブリッド方式** を採用する。
+
+Firebase Identity Platform のマルチテナンシーでは、**テナントごとにユーザープールが分離**される。同一メールアドレスのユーザーであっても、テナントが異なれば異なる UID が発行される。そのため:
+
+- **User : Tenant = N:1**（1 ユーザーは 1 テナントにのみ属する）
+- JWT の `firebase.tenant` クレームから一意にテナント ID を特定できる
+
+**テナント特定の優先順位**:
+
+| エンドポイント種別 | テナント特定方法 | 理由 |
+|---|---|---|
+| **認証あり** | JWT `firebase.tenant` クレーム | 改ざん不可能で最も安全 |
+| **認証なし（公開API）** | `X-Tenant-ID` リクエストヘッダー | JWTが存在しないため、ヘッダーで補完 |
+
+**公開エンドポイントでのヘッダー方式の安全性**:
+- 公開APIは元々「誰でもアクセス可能なデータ」を返すため、ヘッダー偽装のリスクは低い
+- 認証ありエンドポイントでは常にJWTを優先するため、ヘッダー偽装による権限昇格は不可能
+- フロントエンドは全リクエストに `X-Tenant-ID` ヘッダーを付与し、認証ありの場合はJWTが優先される
+
+### 3.2 詳細ロジック / バックエンド実装
+
+#### 3.2.1. Go Backend (`packages/api`)
+
+Connect RPC のインターセプターを利用して RLS を透過的に適用する。DB 接続プールからコネクションを取得する際にフックし、`SET LOCAL`コマンドを実行する。
+
+#### 3.2.2. Node.js/Prisma Backend (`packages/backend`)
+
+Prisma のクライアント拡張（`$extends`）を利用し、テナント ID を要求する新しいクライアント（Tenant-Aware Prisma Client）をリクエストごとに生成する。このクライアントは、全てのクエリをトランザクション内で実行し、第一ステップとして`SET LOCAL`を発行することで、安全かつ透過的に RLS を適用する。
+
+```typescript
+// lib/prisma.ts (拡張クライアントの定義)
+export function createTenantClient(tenantId: string) {
+  return prisma.$extends({
+    query: {
+      $allModels: {
+        async $allOperations({ model, operation, args, query }) {
+          const [, result] = await prisma.$transaction([
+            prisma.$executeRawUnsafe(
+              `SET LOCAL app.current_tenant_id = '${tenantId}'`
+            ),
+            query(args),
+          ]);
+          return result;
+        },
+      },
+    },
+  });
+}
+```
+
+---
+
+## 4. データ設計 (Data Design)
+
+### 4.1 スキーマ変更 / モデル定義
+
+#### 4.1.1. `Tenant` テーブル（新規）
+
+テナント情報を一元管理するマスタテーブル。
+
+```prisma
+model Tenant {
+  id               String   @id @default(cuid())
+  firebaseTenantId String   @unique @map("firebase_tenant_id")
+  name             String   // テナント名（例: "SUNTORY_龍が如く", "LINE_吉本"）
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  // Relations（全19テーブル）
+  // ...
+
+  @@map("tenant")
+}
+```
+
+**設計方針**:
+- **YAGNI 原則**: 必要最小限のフィールドのみ実装（`id`, `firebaseTenantId`, `name`）
+- **subdomain 不要**: テナント識別は Firebase Tenant ID で行う（提供方式は別途確定）
+- **カテゴリ不要**: テナント分類は将来必要になったら追加
+
+#### 4.1.2. 既存テーブルへの `tenant_id` 追加
+
+全 19 テーブルに`tenant_id`カラム（`Tenant`への FK）を追加する。RLS の安全性を最大化するため、子テーブルも含め全テーブルに付与する。
+
+**対象テーブル**: `User`, `Event`, `EventSetlist`, `Pack`, `PackPrice`, `PhysicalPack`, `Certificate`, `CheckinCode`, `CheckinTransaction`, `TradingCard`, `TradingCardBenefit`, `TradingCardBenefitExchangeTransaction`, `PackTradingCardRelation`, `UserCertificate`, `UserTradingCard`, `QuizSurvey`, `PaymentMethod`, `PaymentTransaction`, `Pairing`
+
+### 4.2 RLS ポリシー定義
+
+`app.current_tenant_id`というセッション変数を使い、アクセス可能な行を DB レベルで制限する。
+
+```sql
+-- 対象テーブルでRLSを有効化
+ALTER TABLE "Event" ENABLE ROW LEVEL SECURITY;
+
+-- INSERTとSELECT/UPDATE/DELETEの両方に適用されるポリシーを作成
+CREATE POLICY tenant_isolation_policy ON "Event"
+    FOR ALL
+    USING ("tenant_id" = current_setting('app.current_tenant_id'))
+    WITH CHECK ("tenant_id" = current_setting('app.current_tenant_id'));
+```
+
+---
+
+## 5. 検討した代替案 (Alternatives Considered)
+
+| 案                                                                | メリット                                                                                                                                   | デメリット                                                                                                                | 評価                           |
+| :---------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------ | :----------------------------- |
+| **案 A: アプリケーション層での分離** (`WHERE`句の徹底)            | ・実装が直感的で、特別な DB 機能が不要。<br>・ORM との親和性が高い。                                                                       | ・`WHERE`句の記述漏れが致命的な情報漏洩に直結する。<br>・コードレビューでの検出が困難で、ヒューマンエラーのリスクが高い。 | △                              |
+| **案 B: RLS (Row Level Security)**                                | ・DB 層でデータ分離を強制するため、アプリ層のバグに強い。<br>・`SET LOCAL`により実装をミドルウェアに集約でき、開発者はテナントを意識不要。 | ・ORM（特に Prisma）との連携に工夫が必要。<br>・`SET LOCAL`のオーバーヘッドがわずかに発生する。                           | **◎ (採用)**                   |
+| **案 C: スキーマ分離** (テナントごとに PostgreSQL スキーマを分離) | ・テナント間の分離がより強力。<br>・テーブル名が同じなのでアプリの修正が少ない。                                                           | ・Prisma でのスキーマ動的切り替えのサポートが限定的。<br>・マイグレーションがテナント数分必要になり、運用が複雑化する。   | 〇                             |
+| **案 D: データベース分離** (テナントごとに DB インスタンスを分離) | ・物理的に分離されるため、最も安全でパフォーマンス影響もない。                                                                             | ・テナントごとにインフラコストがかかる。<br>・DB プロビジョニングやコネクション管理が非常に複雑になる。                   | × (コスト・運用面で見合わない) |
+
+**評価結論**:
+`案 B: RLS`は、`案 A`の致命的なセキュリティリスクを DB レベルでカバーしつつ、`案 C, D`ほどの運用・コスト増を招かないため、本プロジェクトの要件（安全性と開発効率の両立）にとって最もバランスの取れた最適な解決策である。
+
+---
+
+## 6. 横断的な懸念事項 (Cross-cutting Concerns)
+
+- **セキュリティ**: RLS により、`WHERE`句のつけ忘れによる情報漏洩リスクを根本的に排除。SQL インジェクション対策として、`SET LOCAL`で設定する`tenant_id`は必ずバックエンド内部で検証・生成された値のみを使用する。
+- **信頼性・可用性**: `createTenantClient`に`tenantId`が渡されない場合は即時エラーとし、不正な状態での DB アクセスを防ぐ。
+- **パフォーマンス**: 各クエリでの`SET LOCAL`実行によるオーバーヘッドは軽微であり、アプリケーション全体のパフォーマンスに大きな影響を与える可能性は低いと判断。`tenant_id`カラムには必ずインデックスを作成する。
+
+---
+
+## 7. 移行・デプロイ・運用計画 (Deployment & Operations)
+
+1.  **Phase 1: スキーマ変更**: `Tenant`テーブル作成と`tenant_id`カラム追加（NULL 許容）。既存データにデフォルト値をバックフィル後、`NOT NULL`制約を追加。
+2.  **Phase 2: バックエンド対応**: RLS 適用ロジックを実装。ただし、RLS ポリシーはまだ有効化しない（Dry Run モード）。
+3.  **Phase 3: RLS 有効化**: テスト環境でポリシーの有効性を確認後、本番環境で有効化。
+4.  **Phase 4: リファクタリング**: RLS が機能していることを確認後、アプリケーションコードから冗長な`WHERE tenant_id = ...`句を順次削除。
+
+- **監視**: テナントごとのリクエスト数やエラー率を監視できるメトリクスを追加する。
+- **切り戻し（Rollback）**: RLS ポリシーに問題が発覚した場合、`ALTER TABLE "TableName" DISABLE ROW LEVEL SECURITY;`を実行することで、ポリシーを一時的に無効化する手順を準備する。
+
+---
+
+## 8. 未解決事項 (Open Questions)
+
+- [x] ~~フロントエンドがサブドメインから Firebase Tenant ID を解決するための具体的な方法~~ → **テナント ID 伝搬方式は JWT クレーム（`firebase.tenant`）方式に決定**。フロントエンドでの具体的なテナント提供方式（サブドメイン / ビルド時埋め込み等）は別途確定。
+- [ ] フロントエンドのテナント提供方式の最終決定（サブドメイン / パスベース / ビルド時埋め込み）。
+- [ ] 管理画面（Admin Package）のマルチテナント対応方針の決定。
+
+---
+
+## 9. 参考資料 (References)
+
+- (リンク) PRD - マルチテナント対応
+- (リンク) Firebase - Authenticate with Identity Platform multi-tenancy
+- (リンク) PostgreSQL - Row Security Policies
+- (リンク) Prisma - `$extends` documentation
+
+---

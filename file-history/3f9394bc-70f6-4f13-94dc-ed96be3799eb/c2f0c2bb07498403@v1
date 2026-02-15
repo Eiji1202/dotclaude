@@ -1,0 +1,17 @@
+import type { PackTradingCardRelation } from "@/prisma/generated";
+
+export function createPackTradingCardRelationMock(
+  overrides: Partial<PackTradingCardRelation> = {},
+): PackTradingCardRelation {
+  return {
+    id: 1,
+    packId: "658dcfa6bc70422ea10cba530ddc71bc",
+    tradingCardId: "db6e2f35c00a4140a272d998eefbe7e4",
+    chance: 0.2,
+    paidChance: 0.2,
+    maxCount: 3,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}

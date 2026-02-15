@@ -1,0 +1,394 @@
+"use server";
+
+import { range } from "@/lib/array";
+import { prisma } from "@/lib/prisma";
+import * as XLSX from "xlsx";
+
+const SHEET_MAX_ROWS = 2000;
+
+export async function upsertMasterData(file: File) {
+  const arrayBuffer = await file.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        await Promise.all([
+          upsertPack(
+            workbook.Sheets[
+              workbook.SheetNames[2] as keyof typeof workbook.Sheets
+            ] as XLSX.Sheet,
+            controller,
+            encoder,
+          ),
+          upsertTradingCardBenefit(
+            workbook.Sheets[
+              workbook.SheetNames[4] as keyof typeof workbook.Sheets
+            ] as XLSX.Sheet,
+            controller,
+            encoder,
+          ),
+        ]);
+
+        // NOTE: トレカは pack や benefit と外部キー制約があるため直列で実行する
+        await upsertTradingCard(
+          workbook.Sheets[
+            workbook.SheetNames[3] as keyof typeof workbook.Sheets
+          ] as XLSX.Sheet,
+          controller,
+          encoder,
+        );
+
+        controller.enqueue(
+          encoder.encode(
+            "<span class='text-green-500 font-bold'>すべての処理が完了しました</span>",
+          ),
+        );
+        controller.close();
+      } catch (error) {
+        controller.enqueue(
+          encoder.encode(
+            `<span class="text-red-500 font-bold">エラーが発生しました: ${
+              error instanceof Error ? error.message : String(error)
+            }</span>\n`,
+          ),
+        );
+        controller.close();
+      }
+    },
+  });
+
+  return stream;
+}
+
+export async function upsertPack(
+  sheet: XLSX.Sheet,
+  controller: ReadableStreamController<Uint8Array>,
+  encoder: TextEncoder,
+) {
+  controller.enqueue(
+    encoder.encode(
+      "<span class='text-yellow-200 font-bold'>パックテーブルの同期処理を開始します...</span>",
+    ),
+  );
+
+  const sheetRange = range(2, SHEET_MAX_ROWS);
+  for await (const i of sheetRange) {
+    if (sheet[`A${i}`] == null) break;
+
+    const packId =
+      typeof sheet[`A${i}`].v === "string"
+        ? sheet[`A${i}`].v.trim()
+        : sheet[`A${i}`].v;
+    const packName =
+      typeof sheet[`B${i}`].v === "string"
+        ? sheet[`B${i}`].v.trim()
+        : sheet[`B${i}`].v;
+    const packPrice = sheet[`C${i}`]?.v ? Number(sheet[`C${i}`].v) : null;
+    const imageURL =
+      typeof sheet[`D${i}`]?.v === "string"
+        ? sheet[`D${i}`]?.v.trim()
+        : sheet[`D${i}`]?.v || "";
+    const scrapImageURL =
+      typeof sheet[`E${i}`]?.v === "string"
+        ? sheet[`E${i}`]?.v.trim()
+        : sheet[`E${i}`]?.v || "";
+    const cutImageURL =
+      typeof sheet[`F${i}`]?.v === "string"
+        ? sheet[`F${i}`]?.v.trim()
+        : sheet[`F${i}`]?.v || "";
+    const checkinGrantCardQuantity = sheet[`G${i}`]?.v
+      ? Number(sheet[`G${i}`].v)
+      : 1;
+    const paymentGrantCardQuantity = sheet[`H${i}`]?.v
+      ? Number(sheet[`H${i}`].v)
+      : 3;
+    const openingVideoType =
+      typeof sheet[`I${i}`]?.v === "string"
+        ? sheet[`I${i}`]?.v.trim()
+        : sheet[`I${i}`]?.v || "black";
+    const bannerImageUrlJ =
+      typeof sheet[`J${i}`]?.v === "string"
+        ? sheet[`J${i}`]?.v.trim()
+        : sheet[`J${i}`]?.v || "";
+    const bannerImageUrlK =
+      typeof sheet[`K${i}`]?.v === "string"
+        ? sheet[`K${i}`]?.v.trim()
+        : sheet[`K${i}`]?.v || "";
+    const bannerImageUrlL =
+      typeof sheet[`L${i}`]?.v === "string"
+        ? sheet[`L${i}`]?.v.trim()
+        : sheet[`L${i}`]?.v || "";
+
+    const bannerImages = [bannerImageUrlJ, bannerImageUrlK, bannerImageUrlL];
+
+    const result = await prisma.pack.upsert({
+      where: { id: packId },
+      update: {
+        name: packName,
+        imageURL,
+        cutImageURL,
+        scrapImageURL,
+        checkinGrantCardQuantity,
+        paymentGrantCardQuantity,
+        openingVideoType,
+        bannerImages,
+      },
+      create: {
+        id: packId,
+        name: packName,
+        imageURL,
+        cutImageURL,
+        scrapImageURL,
+        checkinGrantCardQuantity,
+        paymentGrantCardQuantity,
+        openingVideoType,
+        bannerImages,
+        tenantId: "default-tenant",
+      },
+    });
+
+    if (packPrice != null) {
+      const existingPackPrice = await prisma.packPrice.findFirst({
+        where: {
+          packId: packId,
+          minQuantity: 1,
+        },
+      });
+
+      if (existingPackPrice) {
+        await prisma.packPrice.update({
+          where: { id: existingPackPrice.id },
+          data: {
+            price: packPrice,
+          },
+        });
+      } else {
+        await prisma.packPrice.create({
+          data: {
+            packId: packId,
+            minQuantity: 1,
+            price: packPrice,
+            tenantId: "default-tenant",
+          },
+        });
+      }
+    }
+
+    controller.enqueue(
+      encoder.encode(
+        `<span class='text-yellow-200'>[pack] ${result.id} completed</span>\n`,
+      ),
+    );
+  }
+
+  controller.enqueue(
+    encoder.encode(
+      "<span class='text-yellow-200 font-bold'>パックテーブルの同期処理が完了しました</span>\n",
+    ),
+  );
+}
+
+export async function upsertTradingCard(
+  sheet: XLSX.Sheet,
+  controller: ReadableStreamController<Uint8Array>,
+  encoder: TextEncoder,
+) {
+  controller.enqueue(
+    encoder.encode(
+      "<span class='text-purple-200 font-bold'>トレーディングカードテーブルの同期処理を開始します...</span>",
+    ),
+  );
+
+  const packTradingCardRelation: Map<
+    string,
+    {
+      packId: string;
+      tradingCardId: string;
+      chance: number;
+      paidChance: number;
+      maxCount: number | null;
+    }[]
+  > = new Map();
+  const sheetRange = range(2, SHEET_MAX_ROWS);
+  for await (const i of sheetRange) {
+    if (sheet[`A${i}`] == null) break;
+
+    const id =
+      typeof sheet[`A${i}`]?.v === "string"
+        ? sheet[`A${i}`]?.v.trim()
+        : (sheet[`A${i}`]?.v ?? "");
+    const name =
+      typeof sheet[`B${i}`].v === "string"
+        ? sheet[`B${i}`].v.trim()
+        : sheet[`B${i}`].v;
+    const chance = Number.parseFloat(sheet[`C${i}`]?.w ?? "0");
+    const paidChance = Number.parseFloat(sheet[`D${i}`]?.w ?? "0");
+    const maxCount = sheet[`E${i}`]?.v ? Number(sheet[`E${i}`]?.v) : null;
+    const imageURL =
+      typeof sheet[`F${i}`]?.v === "string"
+        ? sheet[`F${i}`]?.v.trim()
+        : (sheet[`F${i}`]?.v ?? "");
+    const imageBack =
+      typeof sheet[`G${i}`]?.v === "string"
+        ? sheet[`G${i}`]?.v.trim()
+        : (sheet[`G${i}`]?.v ?? "");
+    const usedImageURL =
+      typeof sheet[`H${i}`]?.v === "string"
+        ? sheet[`H${i}`]?.v.trim()
+        : (sheet[`H${i}`]?.v ?? null);
+    const packId = sheet[`I${i}`]?.w?.trim();
+    const benefitId = sheet[`J${i}`]?.w ? Number(sheet[`J${i}`]?.w) : null;
+    const group = sheet[`K${i}`]?.w;
+    const revealedAt = sheet[`L${i}`]?.w?.trim()
+      ? new Date(sheet[`L${i}`].w.trim())
+      : null;
+
+    const relations = packTradingCardRelation.get(packId) ?? [];
+    const relation = {
+      tradingCardId: id,
+      packId,
+      chance,
+      paidChance,
+      maxCount,
+    };
+    packTradingCardRelation.set(packId, [...relations, relation]);
+
+    const result = await prisma.tradingCard.upsert({
+      where: { id },
+      update: {
+        name: name,
+        imageURL: imageURL,
+        backImageURL: imageBack,
+        usedImageURL: usedImageURL,
+        benefitId: benefitId,
+        group: group,
+        revealedAt: revealedAt,
+      },
+      create: {
+        id: id,
+        name: name,
+        imageURL: imageURL,
+        backImageURL: imageBack,
+        usedImageURL: usedImageURL,
+        benefitId: benefitId,
+        group: group,
+        revealedAt: revealedAt,
+        tenantId: "default-tenant",
+      },
+    });
+
+    controller.enqueue(
+      encoder.encode(
+        `<span class='text-purple-200'>[tradingCard] ${result.name} completed</span>\n`,
+      ),
+    );
+  }
+
+  for await (const [packId, packRelations] of packTradingCardRelation) {
+    for await (const relation of packRelations) {
+      const result = await prisma.packTradingCardRelation.upsert({
+        where: {
+          packId_tradingCardId: {
+            packId: packId,
+            tradingCardId: relation.tradingCardId,
+          },
+        },
+        update: {
+          chance: relation.chance,
+          paidChance: relation.paidChance,
+          maxCount: relation.maxCount,
+        },
+        create: {
+          packId: packId,
+          tradingCardId: relation.tradingCardId,
+          chance: relation.chance,
+          paidChance: relation.paidChance,
+          maxCount: relation.maxCount,
+          tenantId: "default-tenant",
+        },
+      });
+
+      controller.enqueue(
+        encoder.encode(
+          `<span class='text-purple-300'>[tradingCardRelation] ${result.packId} - ${result.tradingCardId} completed</span>\n`,
+        ),
+      );
+    }
+  }
+
+  controller.enqueue(
+    encoder.encode(
+      "<span class='text-purple-200 font-bold'>トレーディングカードテーブルの同期処理が完了しました</span>\n",
+    ),
+  );
+}
+
+export async function upsertTradingCardBenefit(
+  sheet: XLSX.Sheet,
+  controller: ReadableStreamController<Uint8Array>,
+  encoder: TextEncoder,
+) {
+  controller.enqueue(
+    encoder.encode(
+      "<span class='text-fuchsia-200 font-bold'>トレーディングカード特典テーブルの同期処理を開始します...</span>",
+    ),
+  );
+  const sheetRange = range(2, SHEET_MAX_ROWS);
+  for await (const i of sheetRange) {
+    if (sheet[`A${i}`] == null) break;
+
+    const benefitId = Number(sheet[`A${i}`].v);
+    const benefitName =
+      typeof sheet[`B${i}`].v === "string"
+        ? sheet[`B${i}`].v.trim()
+        : sheet[`B${i}`].v;
+    const imageURL =
+      typeof sheet[`C${i}`]?.v === "string"
+        ? sheet[`C${i}`]?.v.trim()
+        : (sheet[`C${i}`]?.v ?? "");
+    const exchangeMethod =
+      typeof sheet[`D${i}`]?.v === "string"
+        ? sheet[`D${i}`]?.v.trim()
+        : (sheet[`D${i}`]?.v ?? "");
+    const exchangeMethodForUser =
+      typeof sheet[`E${i}`]?.v === "string"
+        ? sheet[`E${i}`]?.v.trim()
+        : (sheet[`E${i}`]?.v ?? "");
+    const expire = new Date(sheet[`F${i}`].w);
+
+    const result = await prisma.tradingCardBenefit.upsert({
+      where: { id: benefitId },
+      update: {
+        name: benefitName,
+        imageURL: imageURL,
+        exchangeMethod: exchangeMethod,
+        expirationDateForUser: exchangeMethodForUser,
+        expirationDate: expire,
+      },
+      create: {
+        id: benefitId,
+        name: benefitName,
+        imageURL: imageURL,
+        exchangeMethod: exchangeMethod,
+        expirationDateForUser: exchangeMethodForUser,
+        expirationDate: expire,
+        tenantId: "default-tenant",
+      },
+    });
+
+    controller.enqueue(
+      encoder.encode(
+        `<span class='text-fuchsia-200'>[tradingCardBenefit] ${result.name} completed</span>\n`,
+      ),
+    );
+  }
+
+  controller.enqueue(
+    encoder.encode(
+      "<span class='text-fuchsia-200 font-bold'>トレーディングカード特典テーブルの同期処理が完了しました</span>\n",
+    ),
+  );
+}

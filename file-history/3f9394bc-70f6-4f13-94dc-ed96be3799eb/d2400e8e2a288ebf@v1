@@ -1,0 +1,227 @@
+import type { Prisma } from "@/prisma/generated";
+import { randomUUID } from "node:crypto";
+import { prisma } from "~/utils/prisma";
+import { defaultOption, type Option } from "./utils";
+
+export class EventRepository {
+  public async withTransaction<T>(
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  ) {
+    return prisma.$transaction(fn, {
+      // NOTE: トランザクションのタイムアウトを1分に設定
+      timeout: 1000 * 60,
+    });
+  }
+
+  public async countCheckinTransactionByUserId(
+    uid: string,
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+
+    return tx.checkinTransaction.count({
+      where: {
+        userId: uid,
+      },
+    });
+  }
+
+  public async findManyCheckinCodeByPackId(
+    packId: string,
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    return tx.checkinCode.findMany({ where: { packId } });
+  }
+
+  public async findManyCheckinTransactionByUserId(
+    uid: string,
+    args: {
+      first: number;
+      after?: number;
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { first, after } = args;
+
+    return tx.checkinTransaction.findMany({
+      take: first + 1,
+      skip: after ? 1 : undefined,
+      cursor: after ? { id: after } : undefined,
+      orderBy: { receivedAt: "desc" },
+      include: {
+        userCertificates: true,
+        userTradingCards: {
+          include: {
+            tradingCard: true,
+          },
+        },
+      },
+      where: {
+        userId: uid,
+      },
+    });
+  }
+
+  public async findUniqueEvent(
+    id: number,
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+
+    return tx.event.findUnique({
+      where: { id },
+      include: {
+        eventSetlists: true,
+      },
+    });
+  }
+
+  public async findUniqueUserCertificateWithEvent(
+    certificateId: number,
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+
+    return tx.userCertificate.findUnique({
+      where: { id: certificateId },
+      include: { checkinTransaction: { include: { event: true } } },
+    });
+  }
+
+  public async findUniqueUser(uid: string) {
+    return prisma.user.findUnique({ where: { id: uid } });
+  }
+
+  public async findUniqueCheckinCodeWithCertificate(
+    id: string,
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+
+    return tx.checkinCode.findUnique({
+      where: { id },
+      include: { certificate: true },
+    });
+  }
+
+  public async countCheckinTransactionByEventIdAndUserId(
+    args: {
+      eventId: number;
+      userId: string;
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { eventId, userId } = args;
+
+    return tx.checkinTransaction.count({
+      where: { eventId, userId },
+    });
+  }
+
+  public async countCheckinTransactionByCode(
+    code: string,
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+
+    return tx.checkinTransaction.count({ where: { checkinCodeId: code } });
+  }
+
+  public async upsertCheckinTransaction(
+    args: {
+      checkinCodeId: string;
+      eventId: number;
+      userId: string;
+      now: Date;
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { checkinCodeId, eventId, userId, now } = args;
+
+    return tx.checkinTransaction.upsert({
+      where: {
+        checkinCodeId_eventId_userId: { checkinCodeId, eventId, userId },
+      },
+      update: {},
+      create: {
+        userId,
+        eventId,
+        checkinCodeId,
+        receivedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+  }
+
+  public async createUserCertificate(
+    args: {
+      checkinTransactionId: number;
+      userId: string;
+      imageURL: string;
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { checkinTransactionId, userId, imageURL } = args;
+
+    return tx.userCertificate.create({
+      data: {
+        checkinTransactionId,
+        userId,
+        imageURL,
+      },
+    });
+  }
+
+  public async createManyUserTradingCard(
+    args: {
+      checkinTransactionId: number;
+      uid: string;
+      tradingCardIds: string[];
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { checkinTransactionId, uid, tradingCardIds } = args;
+
+    return tx.userTradingCard.createMany({
+      data: tradingCardIds.map((tradingCardId) => ({
+        id: randomUUID().split("-").join(""),
+        userId: uid,
+        checkinTransactionId,
+        tradingCardId,
+      })),
+    });
+  }
+
+  public async findManyUserTradingCard(
+    args: {
+      checkinTransactionId: number;
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { checkinTransactionId } = args;
+
+    return tx.userTradingCard.findMany({
+      where: { checkinTransactionId },
+      include: { tradingCard: true },
+    });
+  }
+
+  public async findManySetListByEventId(
+    eventId: number,
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+
+    return tx.eventSetlist.findMany({
+      where: { eventId },
+    });
+  }
+}

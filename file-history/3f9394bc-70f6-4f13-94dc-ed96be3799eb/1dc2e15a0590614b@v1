@@ -1,0 +1,168 @@
+import type { Response } from "express";
+import { Router } from "express";
+import { randomUUID } from "node:crypto";
+import {
+  PURCHASE_FAILURE_REDIRECT_URL,
+  PURCHASE_SUCCESS_REDIRECT_URL,
+} from "~/constants/url";
+import { type ContextInject, repository, sideEffect } from "~/context";
+import { PackDataSource } from "~/usecase/pack";
+import { assertExists } from "~/utils/assetExists";
+import { config } from "~/utils/config";
+import { toJST } from "~/utils/date";
+import { isFincodeError } from "~/utils/fincode";
+import { logger } from "~/utils/logger";
+import { prisma } from "~/utils/prisma";
+
+const router = Router();
+
+const context: ContextInject = {
+  repository,
+  sideEffect,
+  config,
+};
+
+async function executePayment(res: Response, args: CallbackBody) {
+  try {
+    const packDataSource = new PackDataSource({
+      ...context,
+      uid: args.customer_id,
+    });
+    const paymentTransaction = await prisma.paymentTransaction.findUnique({
+      where: { orderId: args.order_id },
+    });
+
+    // 注文が存在しない場合はリダイレクト
+    if (paymentTransaction == null) {
+      return res
+        .status(307)
+        .redirect(PURCHASE_FAILURE_REDIRECT_URL(args.order_id));
+    }
+
+    // この order が signage の場合、early return してしまう。
+    const pairing = await prisma.pairing.findFirst({
+      where: {
+        paymentTransactionId: paymentTransaction?.id,
+      },
+    });
+    if (pairing) {
+      return res.status(200);
+    }
+
+    // 注文がすでに決済済みの場合はリダイレクト
+    if (paymentTransaction.status === "CAPTURED") {
+      return res
+        .status(307)
+        .redirect(PURCHASE_SUCCESS_REDIRECT_URL(args.order_id));
+    }
+
+    // 決済が成功していない場合はリダイレクト
+    if (args.status !== "CAPTURED") {
+      await prisma.paymentTransaction.update({
+        where: { id: paymentTransaction.id },
+        data: {
+          status: args.status,
+          updatedAt: toJST().toDate(),
+        },
+      });
+      return res
+        .status(307)
+        .redirect(PURCHASE_FAILURE_REDIRECT_URL(args.order_id));
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // NOTE: CAPTURED で複数回実行される可能性があるため、配布ずみか確認して再配布しないようにする
+      const alreadyDistributedCardCount = await tx.userTradingCard.count({
+        where: { paymentTransactionId: paymentTransaction.id },
+      });
+      if (alreadyDistributedCardCount > 0) {
+        return;
+      }
+
+      const pack = await repository.pack.findUniquePack(
+        paymentTransaction.packId,
+      );
+      assertExists(pack, "Pack");
+
+      const selectedCardIds =
+        await packDataSource.selectRandomTradingCardIdsByPackId(
+          "payment",
+          paymentTransaction.packId,
+          paymentTransaction.quantity * pack.paymentGrantCardQuantity,
+        );
+
+      await tx.userTradingCard.createMany({
+        data: selectedCardIds.map((cardId) => {
+          const id = randomUUID().split("-").join("");
+          return {
+            id,
+            userId: args.customer_id,
+            tradingCardId: cardId,
+            paymentTransactionId: paymentTransaction.id,
+          };
+        }),
+      });
+
+      await tx.paymentTransaction.update({
+        where: { id: paymentTransaction.id },
+        data: {
+          status: "CAPTURED",
+          capturedAt: toJST().toDate(),
+        },
+      });
+    });
+
+    return res
+      .status(307)
+      .redirect(PURCHASE_SUCCESS_REDIRECT_URL(args.order_id));
+  } catch (error) {
+    logger.error("failed to execute payment", error, {
+      ...args,
+    });
+
+    if (isFincodeError(error)) {
+      return res
+        .status(307)
+        .redirect(
+          PURCHASE_FAILURE_REDIRECT_URL(
+            args.order_id,
+            error.errors.at(-1)?.error_code,
+          ),
+        );
+    }
+
+    return res
+      .status(307)
+      .redirect(PURCHASE_FAILURE_REDIRECT_URL(args.order_id));
+  }
+}
+
+// ref: https://docs.fincode.jp/api#tag/Webhook_
+interface CallbackBody {
+  shop_id: string;
+  order_id: string;
+  access_id: string;
+  pay_type:
+    | "Card"
+    | "Konbini"
+    | "Paypay"
+    | "Applepay"
+    | "Directdebit"
+    | "Virtualaccount";
+  status:
+    | "UNPROCESSED"
+    | "CHECKED"
+    | "AUTHORIZED"
+    | "CAPTURED"
+    | "CANCELED"
+    | "AUTHENTICATED";
+  customer_id: string;
+  amount: number;
+}
+
+router.post("/callback", async (req, res) => {
+  const body: CallbackBody = req.body;
+  return await executePayment(res, body);
+});
+
+export { router };

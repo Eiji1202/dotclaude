@@ -1,0 +1,256 @@
+import type { Response } from "express";
+import { Router } from "express";
+import { randomUUID } from "node:crypto";
+import {
+  PURCHASE_FAILURE_REDIRECT_URL,
+  PURCHASE_SUCCESS_REDIRECT_URL,
+} from "~/constants/url";
+import { type ContextInject, repository, sideEffect } from "~/context";
+import { PackDataSource } from "~/usecase/pack";
+import { assertExists } from "~/utils/assetExists";
+import { config } from "~/utils/config";
+import { toJST } from "~/utils/date";
+import {
+  executeFincode3DSAuth,
+  executeFincodePaymentAfter3DSAuth,
+  get3DSAuthResult,
+  isFincodeError,
+} from "~/utils/fincode";
+import { logger } from "~/utils/logger";
+import { prisma } from "~/utils/prisma";
+
+const router = Router();
+
+const context: ContextInject = {
+  repository,
+  sideEffect,
+  config,
+};
+
+interface Args {
+  paymentTransactionId: number;
+  orderId: string;
+  accessId: string;
+  customerId: string;
+  packId: string;
+  quantity: number;
+}
+async function executePayment(res: Response, args: Args) {
+  try {
+    // 3D セキュア認証後決済実行
+    const result = await executeFincodePaymentAfter3DSAuth(
+      args.orderId,
+      args.accessId,
+    );
+
+    const paymentTransaction = await prisma.paymentTransaction.findUnique({
+      where: { orderId: args.orderId },
+    });
+
+    // 注文が存在しない場合はリダイレクト
+    if (paymentTransaction == null) {
+      return res
+        .status(307)
+        .redirect(PURCHASE_FAILURE_REDIRECT_URL(args.orderId));
+    }
+
+    // 注文がすでに決済済みの場合はリダイレクト
+    if (paymentTransaction.status === "CAPTURED") {
+      return res
+        .status(307)
+        .redirect(PURCHASE_SUCCESS_REDIRECT_URL(args.orderId));
+    }
+
+    // 決済が成功していない場合はリダイレクト
+    if (result.status !== "CAPTURED") {
+      await prisma.paymentTransaction.update({
+        where: { id: paymentTransaction.id },
+        data: {
+          status: result.status,
+          capturedAt: toJST().toDate(),
+        },
+      });
+
+      return res
+        .status(307)
+        .redirect(PURCHASE_FAILURE_REDIRECT_URL(args.orderId));
+    }
+
+    const packDataSource = new PackDataSource({
+      ...context,
+      uid: args.customerId,
+    });
+
+    await prisma.$transaction(async (tx) => {
+      const alreadyDistributedCardCount = await prisma.userTradingCard.count({
+        where: { paymentTransactionId: paymentTransaction.id },
+      });
+      if (alreadyDistributedCardCount > 0) {
+        return;
+      }
+
+      const pack = await repository.pack.findUniquePack(args.packId);
+      assertExists(pack, "Pack");
+
+      const selectedCardIds =
+        await packDataSource.selectRandomTradingCardIdsByPackId(
+          "payment",
+          args.packId,
+          args.quantity * pack.paymentGrantCardQuantity,
+        );
+
+      await tx.userTradingCard.createMany({
+        data: selectedCardIds.map((cardId) => {
+          const id = randomUUID().split("-").join("");
+
+          return {
+            id,
+            userId: args.customerId,
+            tradingCardId: cardId,
+            paymentTransactionId: args.paymentTransactionId,
+          };
+        }),
+      });
+
+      await tx.paymentTransaction.update({
+        where: { id: args.paymentTransactionId },
+        data: {
+          status: result.status,
+          capturedAt: toJST().toDate(),
+        },
+      });
+    });
+
+    return res
+      .status(307)
+      .redirect(PURCHASE_SUCCESS_REDIRECT_URL(args.orderId));
+  } catch (error) {
+    logger.error("failed to execute payment", error, {
+      ...args,
+    });
+
+    if (isFincodeError(error)) {
+      return res
+        .status(307)
+        .redirect(
+          PURCHASE_FAILURE_REDIRECT_URL(
+            args.orderId,
+            error.errors.at(-1)?.error_code,
+          ),
+        );
+    }
+
+    return res
+      .status(307)
+      .redirect(PURCHASE_FAILURE_REDIRECT_URL(args.orderId));
+  }
+}
+
+router.post(
+  "/:paymentTransactionId/:orderId/:customerId/:packId/:quantity",
+  async (req, res) => {
+    const {
+      paymentTransactionId: txStr,
+      orderId,
+      customerId,
+      packId,
+      quantity: qtyStr,
+    } = req.params;
+    const accessId = `${req.query.MD}`;
+
+    const paymentTransactionId = Number.parseInt(txStr, 10);
+    const quantity = Number.parseInt(qtyStr, 10);
+
+    // ref: https://docs.fincode.jp/payment/fraud_protection/3d_secure_2
+    if (req.body.event === "AuthResultReady") {
+      // 3D セキュア認証結果確定
+      const result = await get3DSAuthResult(accessId);
+
+      return typeof result.tds2_trans_result === "string" &&
+        ["Y", "A"].includes(result.tds2_trans_result)
+        ? await executePayment(res, {
+            paymentTransactionId,
+            orderId,
+            accessId,
+            customerId,
+            packId,
+            quantity,
+          })
+        : res
+            .status(307)
+            .redirect(
+              PURCHASE_FAILURE_REDIRECT_URL(
+                orderId,
+                result.tds2_trans_result_reason ?? undefined,
+              ),
+            );
+    }
+
+    try {
+      // 3D セキュア認証実行
+      const result = await executeFincode3DSAuth(accessId, req.body.param);
+      /**
+       * レスポンスのtds2_trans_resultがYまたはAのとき、認証後決済 実行APIを呼び出し3Dセキュア認証された決済を完了させます。
+       * ref: https://docs.fincode.jp/api#tag/3D/operation/executeThreeDSecureecureAuthentication
+       */
+      if (
+        typeof result.tds2_trans_result === "string" &&
+        ["Y", "A"].includes(result.tds2_trans_result)
+      ) {
+        return await executePayment(res, {
+          paymentTransactionId,
+          orderId,
+          accessId,
+          customerId,
+          packId,
+          quantity,
+        });
+      }
+
+      if (result.tds2_trans_result === "C") {
+        /**
+         * レスポンスのtds2_trans_resultがCのとき、challenge_urlにリダイレクトし購入者にチャレンジ認証を実施させ、結果を3Dセキュア認証 結果確定APIで確定します。
+         * ref: https://docs.fincode.jp/api#tag/3D/operation/executeThreeDSecureecureAuthentication
+         */
+        // biome-ignore lint/style/noNonNullAssertion: <explanation>
+        return res.status(307).redirect(result.challenge_url!);
+      }
+
+      /**
+       * レスポンスのtds2_trans_resultが上記以外の場合、3Dセキュア認証で決済が拒否されたことを示します。
+       * ref: https://docs.fincode.jp/api#tag/3D/operation/executeThreeDSecureecureAuthentication
+       */
+      return res
+        .status(307)
+        .redirect(
+          PURCHASE_FAILURE_REDIRECT_URL(
+            orderId,
+            result.tds2_trans_result_reason ?? undefined,
+          ),
+        );
+    } catch (error) {
+      logger.error("failed to execute 3ds auth", error, {
+        accessId,
+        params: req.params,
+        body: req.body,
+      });
+
+      // fincode のエラーならエラーコードを載せてリダイレクト
+      if (isFincodeError(error)) {
+        return res
+          .status(307)
+          .redirect(
+            PURCHASE_FAILURE_REDIRECT_URL(
+              orderId,
+              error.errors.at(-1)?.error_code,
+            ),
+          );
+      }
+
+      // 原因不明のエラーの場合、エラーコードを載せずにリダイレクト
+      return res.status(307).redirect(PURCHASE_FAILURE_REDIRECT_URL(orderId));
+    }
+  },
+);
+
+export { router };

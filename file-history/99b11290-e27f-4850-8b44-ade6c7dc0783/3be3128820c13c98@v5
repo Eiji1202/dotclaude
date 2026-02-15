@@ -1,0 +1,18 @@
+import type { CheckinCode } from "@/prisma/generated";
+
+export function createCheckinCodeMock(
+  overrides: Partial<CheckinCode> = {},
+): CheckinCode {
+  return {
+    id: "test-code",
+    packId: "pack-id",
+    eventId: 1,
+    certificateId: 1,
+    type: "PER_EVENT",
+    grantType: "CHECKIN_GRANT_ALL",
+    tenantId: 1,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}

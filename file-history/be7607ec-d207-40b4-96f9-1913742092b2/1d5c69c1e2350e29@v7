@@ -1,0 +1,477 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["typedSql"]
+  output          = "./generated"
+  binaryTargets   = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// テナント
+model Tenant {
+  id               String   @id @default(cuid())
+  firebaseTenantId String   @unique @map("firebase_tenant_id")
+  name             String
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  events                                 Event[]
+  eventSetlists                          EventSetlist[]
+  packs                                  Pack[]
+  physicalPacks                          PhysicalPack[]
+  tradingCards                           TradingCard[]
+  tradingCardBenefits                    TradingCardBenefit[]
+  tradingCardBenefitExchangeTransactions TradingCardBenefitExchangeTransaction[]
+  packTradingCardRelations               PackTradingCardRelation[]
+  certificates                           Certificate[]
+  users                                  User[]
+  checkinCodes                           CheckinCode[]
+  checkinTransactions                    CheckinTransaction[]
+  userCertificates                       UserCertificate[]
+  userTradingCards                       UserTradingCard[]
+  packPrices                             PackPrice[]
+  paymentMethods                         PaymentMethod[]
+  paymentTransactions                    PaymentTransaction[]
+  quizSurveys                            QuizSurvey[]
+  pairings                               Pairing[]
+
+  @@map("tenant")
+}
+
+// イベント
+model Event {
+  id                  Int                  @id @default(autoincrement())
+  name                String
+  headerImageURL      String               @default("") @map("header_image_url")
+  startDate           DateTime             @map("start_date")
+  tenantId            String               @map("tenant_id")
+  tenant              Tenant               @relation(fields: [tenantId], references: [id])
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+  checkinCodes        CheckinCode[]
+  checkinTransactions CheckinTransaction[]
+  eventSetlists       EventSetlist[]
+  physicalPacks       PhysicalPack[]
+
+  @@index([tenantId])
+  @@map("event")
+}
+
+// セトリ
+model EventSetlist {
+  id                   Int       @id @default(autoincrement())
+  eventId              Int       @map("event_id")
+  event                Event     @relation(fields: [eventId], references: [id])
+  artistName           String    @map("artist_name") // アーティスト名
+  content              String    @map("content") // セトリの内容
+  appleMusicURL        String?   @map("apple_music_url") // Apple Music のURL
+  spotifyURL           String?   @map("spotify_url") // Spotify のURL
+  notificationDuration Int       @default(0) @map("notification_duration") // 通知の表示期間(日数)
+  publishedAt          DateTime? @map("published_at") // セトリの公開日時
+  tenantId             String    @map("tenant_id")
+  tenant               Tenant    @relation(fields: [tenantId], references: [id])
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  @@index([tenantId])
+  @@map("event_setlist")
+}
+
+// パック
+model Pack {
+  id                       String                    @id @default(uuid())
+  name                     String
+  public                   Boolean                   @default(true)
+  imageURL                 String                    @map("image_url")
+  cutImageURL              String                    @default("") @map("cut_image_url")
+  scrapImageURL            String                    @default("") @map("scrap_image_url")
+  checkinGrantCardQuantity Int                       @default(1) @map("checkin_grant_card_quantity")
+  paymentGrantCardQuantity Int                       @default(3) @map("payment_grant_card_quantity")
+  openingVideoType         String                    @default("black") @map("opening_video_type")
+  bannerImages             String[]                  @default([]) @map("banner_images")
+  tenantId                 String                    @map("tenant_id")
+  tenant                   Tenant                    @relation(fields: [tenantId], references: [id])
+  createdAt                DateTime                  @default(now()) @map("created_at")
+  updatedAt                DateTime                  @updatedAt @map("updated_at")
+  packTradingCardRelations PackTradingCardRelation[]
+  checkinCodes             CheckinCode[]
+  packPrices               PackPrice[]
+  paymentTransactions      PaymentTransaction[]
+  physicalPacks            PhysicalPack[]
+
+  @@index([tenantId])
+  @@map("pack")
+}
+
+// フィジカルパック
+model PhysicalPack {
+  id         Int      @id @default(autoincrement())
+  eventId    Int      @map("event_id")
+  event      Event    @relation(fields: [eventId], references: [id])
+  packId     String   @map("pack_id")
+  pack       Pack     @relation(fields: [packId], references: [id])
+  physicalId String   @map("physical_id")
+  tenantId   String   @map("tenant_id")
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@unique([eventId, packId, physicalId])
+  @@index([tenantId])
+  @@map("physical_pack")
+}
+
+// トレーディングカード
+model TradingCard {
+  id                       String                    @id @default(uuid())
+  name                     String
+  imageURL                 String                    @map("image_url")
+  backImageURL             String                    @map("back_image_url")
+  usedImageURL             String?                   @map("used_image_url")
+  benefitId                Int?                      @map("benefit_id")
+  benefit                  TradingCardBenefit?       @relation(fields: [benefitId], references: [id])
+  group                    String?                   @map("group")
+  revealedAt               DateTime?                 @default(now()) @map("revealed_at")
+  tenantId                 String                    @map("tenant_id")
+  tenant                   Tenant                    @relation(fields: [tenantId], references: [id])
+  createdAt                DateTime                  @default(now()) @map("created_at")
+  updatedAt                DateTime                  @updatedAt @map("updated_at")
+  userTradingCards         UserTradingCard[]
+  packTradingCardRelations PackTradingCardRelation[]
+
+  @@index([tenantId])
+  @@map("trading_card")
+}
+
+// カード特典
+model TradingCardBenefit {
+  id                    Int           @id @default(autoincrement())
+  name                  String
+  imageURL              String        @map("image_url") // 特典画像URL
+  exchangeMethod        String        @map("exchange_method") // 特典交換方法
+  expirationDateForUser String        @map("expiration_date_for_user") // 特典有効期限(ユーザー向け)
+  expirationDate        DateTime      @map("expiration_date") // 特典有効期限
+  tenantId              String        @map("tenant_id")
+  tenant                Tenant        @relation(fields: [tenantId], references: [id])
+  createdAt             DateTime      @default(now()) @map("created_at")
+  updatedAt             DateTime      @updatedAt @map("updated_at")
+  tradingCards          TradingCard[]
+
+  @@index([tenantId])
+  @@map("trading_card_benefit")
+}
+
+// トレーディングカードの特典の交換履歴
+model TradingCardBenefitExchangeTransaction {
+  id                Int             @id @default(autoincrement())
+  userId            String          @map("user_id")
+  user              User            @relation(fields: [userId], references: [id])
+  userTradingCardId String          @map("user_trading_card_id")
+  userTradingCard   UserTradingCard @relation(fields: [userTradingCardId], references: [id])
+  exchangedAt       DateTime        @map("exchanged_at") // 交換日時
+  tenantId          String          @map("tenant_id")
+  tenant            Tenant          @relation(fields: [tenantId], references: [id])
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+
+  @@index([tenantId])
+  @@map("trading_card_benefit_exchange_transaction")
+}
+
+// パックとトレーディングカードのリレーション
+model PackTradingCardRelation {
+  id            Int         @id @default(autoincrement())
+  packId        String      @map("pack_id")
+  pack          Pack        @relation(fields: [packId], references: [id])
+  tradingCardId String      @map("trading_card_id")
+  tradingCard   TradingCard @relation(fields: [tradingCardId], references: [id])
+  chance        Float       @map("chance") // 無料当選確率
+  paidChance    Float       @default(0) @map("paid_chance") // 有料当選確率
+  maxCount      Int?        @map("max_count") // 最大配布数
+  tenantId      String      @map("tenant_id")
+  tenant        Tenant      @relation(fields: [tenantId], references: [id])
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @updatedAt @map("updated_at")
+
+  @@unique([packId, tradingCardId])
+  @@index([tenantId])
+  @@map("pack_trading_card_relation")
+}
+
+// デジタルパスのベース画像
+model Certificate {
+  id           Int           @id @default(autoincrement())
+  imageURL     String        @map("image_url")
+  tenantId     String        @map("tenant_id")
+  tenant       Tenant        @relation(fields: [tenantId], references: [id])
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+  checkinCodes CheckinCode[]
+
+  @@index([tenantId])
+  @@map("certificate")
+}
+
+// ユーザー
+model User {
+  id                                     String                                  @id // firebase uid
+  name                                   String? // メールログインの場合に、名前なしで登録されることを想定する
+  lineId                                 String?                                 @unique @map("line_id") // line の user id が指定される(LINEで登録した場合のみ)
+  email                                  String?                                 @unique // email が指定される(メールアドレスで登録した場合のみ)
+  imageURL                               String                                  @map("image_url") // メールログインの場合に、画像なしで登録されることを想定する
+  nickname                               String?                                 @unique @map("nickname") // マイページシェア用のニックネーム
+  tenantId                               String                                  @map("tenant_id")
+  tenant                                 Tenant                                  @relation(fields: [tenantId], references: [id])
+  createdAt                              DateTime                                @default(now()) @map("created_at")
+  updatedAt                              DateTime                                @updatedAt @map("updated_at")
+  checkinTransaction                     CheckinTransaction[]
+  tradingCardBenefitExchangeTransactions TradingCardBenefitExchangeTransaction[]
+  userCertificates                       UserCertificate[]
+  userTradingCards                       UserTradingCard[]
+  paymentTransactions                    PaymentTransaction[]
+  paymentMethods                         PaymentMethod[]
+  quizSurveys                            QuizSurvey[]
+  Pairing                                Pairing[]
+
+  @@index([tenantId])
+  @@map("user")
+}
+
+// チェックインコードの種類
+enum CheckinCodeType {
+  PER_EVENT // イベントに対して1つにユニークなコードを発行
+  PER_USER // イベントに対してユーザー毎にユニークなコードを発行
+}
+
+// チェックインでの付与タイプ
+enum CheckinGrantType {
+  CHECKIN_GRANT_ALL // デジタルパスとトレーディングカードを付与
+  CHECKIN_GRANT_CERTIFICATE_ONLY // デジタルパスのみ付与
+}
+
+// チェックインコード
+model CheckinCode {
+  id                  String               @id @default(uuid())
+  eventId             Int                  @map("event_id")
+  event               Event                @relation(fields: [eventId], references: [id])
+  certificateId       Int                  @map("certificate_id")
+  certificate         Certificate          @relation(fields: [certificateId], references: [id])
+  packId              String               @map("pack_id")
+  pack                Pack                 @relation(fields: [packId], references: [id])
+  type                CheckinCodeType      @default(PER_USER) @map("type") // チェックインコードの種類
+  grantType           CheckinGrantType     @default(CHECKIN_GRANT_ALL) @map("grant_type") // チェックインでの付与タイプ
+  tenantId            String               @map("tenant_id")
+  tenant              Tenant               @relation(fields: [tenantId], references: [id])
+  checkinTransactions CheckinTransaction[]
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+
+  @@index([tenantId])
+  @@map("checkin_code")
+}
+
+// チェックイン履歴
+model CheckinTransaction {
+  id               Int               @id @default(autoincrement())
+  userId           String            @map("user_id")
+  user             User              @relation(fields: [userId], references: [id])
+  eventId          Int               @map("event_id")
+  event            Event             @relation(fields: [eventId], references: [id])
+  checkinCodeId    String            @map("checkin_code_id")
+  checkinCode      CheckinCode       @relation(fields: [checkinCodeId], references: [id])
+  receivedAt       DateTime          @map("received_at")
+  tenantId         String            @map("tenant_id")
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+  userTradingCards UserTradingCard[]
+  userCertificates UserCertificate[]
+
+  @@unique([checkinCodeId, eventId, userId])
+  @@index([tenantId])
+  @@map("checkin_transaction")
+}
+
+// ユーザーが保持してるデジタルパス
+model UserCertificate {
+  id                   Int                @id @default(autoincrement())
+  userId               String             @map("user_id")
+  user                 User               @relation(fields: [userId], references: [id])
+  // ユーザー毎に生成されたデジタルパス画像URL
+  imageURL             String             @map("image_url")
+  checkinTransactionId Int                @map("checkin_transaction_id")
+  checkinTransaction   CheckinTransaction @relation(fields: [checkinTransactionId], references: [id])
+  tenantId             String             @map("tenant_id")
+  tenant               Tenant             @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("user_certificate")
+}
+
+// ユーザーが保持してるトレーディングカード
+model UserTradingCard {
+  id                                     String                                  @id @default(uuid())
+  userId                                 String                                  @map("user_id")
+  user                                   User                                    @relation(fields: [userId], references: [id])
+  tradingCardId                          String                                  @map("trading_card_id")
+  tradingCard                            TradingCard                             @relation(fields: [tradingCardId], references: [id])
+  checkinTransactionId                   Int?                                    @map("checkin_transaction_id")
+  checkinTransaction                     CheckinTransaction?                     @relation(fields: [checkinTransactionId], references: [id])
+  paymentTransactionId                   Int?                                    @map("payment_transaction_id")
+  paymentTransaction                     PaymentTransaction?                     @relation(fields: [paymentTransactionId], references: [id])
+  pairingSessionId                       String?                                 @map("pairing_session_id")
+  pairing                                Pairing?                                @relation(fields: [pairingSessionId], references: [pairingSessionId])
+  tenantId                               String                                  @map("tenant_id")
+  tenant                                 Tenant                                  @relation(fields: [tenantId], references: [id])
+  createdAt                              DateTime                                @default(now()) @map("created_at")
+  updatedAt                              DateTime                                @updatedAt @map("updated_at")
+  tradingCardBenefitExchangeTransactions TradingCardBenefitExchangeTransaction[]
+
+  @@index([tenantId])
+  @@map("user_trading_card")
+}
+
+// パックの価格テーブル
+model PackPrice {
+  id          Int      @id @default(autoincrement())
+  packId      String   @map("pack_id")
+  pack        Pack     @relation(fields: [packId], references: [id])
+  minQuantity Int      @map("min_quantity") // range start
+  maxQuantity Int?     @map("max_quantity") // range end
+  price       Int      @map("price") // 価格
+  tenantId    String   @map("tenant_id")
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([tenantId])
+  @@map("pack_price")
+}
+
+enum PaymentMethodType {
+  CARD
+  PAYPAY
+  APPLEPAY
+  CAMPAIGN
+  PHYSICAL
+}
+
+// 決済手段テーブル
+model PaymentMethod {
+  id                  Int                  @id @default(autoincrement())
+  userId              String               @map("user_id")
+  user                User                 @relation(fields: [userId], references: [id])
+  type                PaymentMethodType    @map("type") // 決済方法
+  cardId              String?              @map("card_id") // fincode のクレジットカードID
+  cardNo              String?              @map("card_no") // クレジットカード番号
+  cardBrand           String?              @map("card_brand") // クレジットカードブランド
+  tenantId            String               @map("tenant_id")
+  tenant              Tenant               @relation(fields: [tenantId], references: [id])
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+  paymentTransactions PaymentTransaction[]
+
+  @@index([tenantId])
+  @@map("payment_method")
+}
+
+enum PaymentStatus {
+  UNPROCESSED
+  CHECKED
+  AUTHORIZED
+  CAPTURED
+  CANCELED
+  AUTHENTICATED
+  AWAITING_CUSTOMER_PAYMENT
+  EXPIRED
+  FAILED
+}
+
+// 決済トランザクション
+model PaymentTransaction {
+  id               Int               @id @default(autoincrement())
+  quantity         Int               @map("quantity") // 購入パック数
+  totalPrice       Int               @map("total_price") // 決済金額
+  orderId          String            @unique @map("order_id") // fincode order id
+  accessId         String            @unique @map("access_id") // fincode access id
+  status           PaymentStatus     @map("status")
+  paymentMethodId  Int               @map("payment_method_id")
+  paymentMethod    PaymentMethod     @relation(fields: [paymentMethodId], references: [id])
+  packId           String            @map("pack_id")
+  pack             Pack              @relation(fields: [packId], references: [id])
+  userId           String            @map("user_id")
+  user             User              @relation(fields: [userId], references: [id])
+  reconcilerNote   String?           @map("reconciler_note") // 突合結果のメモ
+  capturedAt       DateTime?         @map("captured_at") // 決済確定日時
+  tenantId         String            @map("tenant_id")
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+  userTradingCards UserTradingCard[]
+  pairings         Pairing[]
+
+  @@index([tenantId])
+  @@map("payment_transaction")
+}
+
+// クイズアンケート（武道館用）
+model QuizSurvey {
+  id             Int      @id @default(autoincrement())
+  userId         String   @map("user_id")
+  user           User     @relation(fields: [userId], references: [id])
+  identifier     String // イベントの識別子
+  gender         String
+  age            Int
+  prefectureCode String   @map("prefecture_code") // 都道府県コード
+  tenantId       String   @map("tenant_id")
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, identifier])
+  @@index([tenantId])
+  @@map("quiz_survey")
+}
+
+// ペアリング
+enum PairingStatus {
+  PENDING
+  USING
+  COMPLETED
+  CANCELED
+  EXPIRED
+
+  @@map("pairing_status")
+}
+
+model Pairing {
+  id                   Int                 @id @default(autoincrement())
+  pairingSessionId     String              @unique @map("pairing_session_id")
+  deviceId             Int                 @map("device_id")
+  codeHash             String              @map("code_hash")
+  status               PairingStatus       @default(PENDING) @map("status")
+  uid                  String?             @map("uid")
+  token                String?             @map("token")
+  user                 User?               @relation(fields: [uid], references: [id])
+  // NOTE: この paymentTransactionId は履歴ではなく、そのセッションで作られた最新の決済IDを保持する。
+  // 履歴は PaymentTransaction に存在し、UserTradingCard の pairingSessionId カラムにどのセッションの時に得たものなのかを記録している。
+  paymentTransactionId Int?                @map("payment_transaction_id")
+  paymentTransaction   PaymentTransaction? @relation(fields: [paymentTransactionId], references: [id])
+  expiresAt            DateTime            @map("expires_at")
+  claimedAt            DateTime?           @map("claimed_at")
+  completedAt          DateTime?           @map("completed_at")
+  canceledAt           DateTime?           @map("canceled_at")
+  tenantId             String              @map("tenant_id")
+  tenant               Tenant              @relation(fields: [tenantId], references: [id])
+  createdAt            DateTime            @default(now()) @map("created_at")
+  updatedAt            DateTime            @updatedAt @map("updated_at")
+  UserTradingCard      UserTradingCard[]
+
+  @@index([deviceId, createdAt])
+  @@index([tenantId])
+  @@map("pairing")
+}

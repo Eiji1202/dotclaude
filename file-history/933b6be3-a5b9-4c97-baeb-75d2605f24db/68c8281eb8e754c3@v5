@@ -1,0 +1,16 @@
+import type { User } from "@/prisma/generated";
+
+export function createUserMock(overrides: Partial<User> = {}): User {
+  return {
+    id: "test-user-id",
+    name: "テストユーザー",
+    lineId: "test-line-id",
+    email: "test@example.com",
+    imageURL: "https://example.com/avatar.jpg",
+    nickname: "testuser",
+    tenantId: 1,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}

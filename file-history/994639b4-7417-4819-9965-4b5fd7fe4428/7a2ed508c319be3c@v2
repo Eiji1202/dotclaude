@@ -1,0 +1,92 @@
+import type { Prisma } from "@/prisma/generated";
+import { prisma } from "~/utils/prisma";
+import { defaultOption, type Option } from "./utils";
+
+export class UserRepository {
+  public async withTransaction<T>(
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  ) {
+    return prisma.$transaction(fn);
+  }
+
+  public async findUniqueUserById(
+    id: string,
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+
+    return tx.user.findUnique({ where: { id } });
+  }
+
+  public async findUniqueUserByNickname(
+    nickname: string,
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+
+    return tx.user.findUnique({ where: { nickname } });
+  }
+
+  public async findManyUserCertificates(
+    userId: string,
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+
+    return tx.userCertificate.findMany({
+      where: { userId },
+      orderBy: { checkinTransactionId: "desc" },
+    });
+  }
+
+  public async findManyUserTradingCardsByUserId(
+    userId: string,
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+
+    return tx.userTradingCard.findMany({
+      where: { userId },
+      include: { tradingCard: true },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  public async upsertUserByEmail(
+    args: {
+      id: string;
+      name: string;
+      imageURL: string;
+      email: string;
+      tenantId: string;
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { id, name, imageURL, email, tenantId } = args;
+
+    return tx.user.upsert({
+      where: { id },
+      update: {},
+      create: { id, name, imageURL, email, tenantId },
+    });
+  }
+
+  public async updateUser(
+    args: {
+      id: string;
+      name?: string;
+      imageURL?: string;
+      nickname?: string;
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { id, name, imageURL, nickname } = args;
+
+    return tx.user.update({
+      where: { id },
+      data: { name, imageURL, nickname },
+    });
+  }
+}

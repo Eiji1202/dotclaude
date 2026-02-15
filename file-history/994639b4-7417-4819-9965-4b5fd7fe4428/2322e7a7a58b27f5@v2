@@ -1,0 +1,114 @@
+name: DB Migration
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      cloud_sql_instance:
+        type: string
+        required: true
+      workload_identity_provider:
+        type: string
+        required: true
+      service_account:
+        type: string
+        required: true
+    secrets:
+      DATABASE_URL:
+        required: true
+      SLACK_NOTIFICATION_WEBHOOK_URL:
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.environment }}-db-migration
+  cancel-in-progress: true
+
+env:
+  TZ: Asia/Tokyo
+
+defaults:
+  run:
+    working-directory: ./packages/api
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/api/go.mod
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2.1.2
+        id: auth
+        with:
+          token_format: access_token
+          workload_identity_provider: ${{ inputs.workload_identity_provider }}
+          service_account: ${{ inputs.service_account }}
+
+      - name: Start Cloud SQL Proxy
+        shell: bash
+        run: |
+          wget -q https://dl.google.com/cloudsql/cloud_sql_proxy.linux.amd64 -O cloud_sql_proxy
+          chmod +x cloud_sql_proxy
+          ./cloud_sql_proxy --version
+          ./cloud_sql_proxy -instances=${{ inputs.cloud_sql_instance }}=tcp:5432 &
+          sleep 3
+
+      - name: Parse DATABASE_URL
+        shell: bash
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          POSTGRES_USER=$(node -e "console.log(new URL(process.env.DATABASE_URL).username)")
+          POSTGRES_PASSWORD=$(node -e "console.log(decodeURIComponent(new URL(process.env.DATABASE_URL).password))")
+          POSTGRES_DB=$(node -e "console.log(new URL(process.env.DATABASE_URL).pathname.split('/').pop())")
+          echo "::add-mask::${POSTGRES_PASSWORD}"
+          echo "POSTGRES_USER=${POSTGRES_USER}" >> $GITHUB_ENV
+          echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}" >> $GITHUB_ENV
+          echo "POSTGRES_DB=${POSTGRES_DB}" >> $GITHUB_ENV
+
+      - name: Seed Default Tenant
+        shell: bash
+        run: |
+          PGPASSWORD="${POSTGRES_PASSWORD}" psql -h 127.0.0.1 -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c "
+            CREATE TABLE IF NOT EXISTS tenant (
+              id TEXT PRIMARY KEY,
+              firebase_tenant_id TEXT NOT NULL UNIQUE,
+              name TEXT NOT NULL,
+              created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO tenant (id, firebase_tenant_id, name)
+            VALUES ('default-tenant', 'default', 'Default Tenant')
+            ON CONFLICT (id) DO NOTHING;
+          "
+
+      - name: DB Migration
+        shell: bash
+        run: |
+          make migrate POSTGRES_HOST=127.0.0.1 POSTGRES_USER="${POSTGRES_USER}" POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" POSTGRES_DB="${POSTGRES_DB}"
+
+      - name: Slack Notification(Success)
+        uses: ./.github/actions/slack-notification
+        if: success()
+        with:
+          webhook_url: ${{ secrets.SLACK_NOTIFICATION_WEBHOOK_URL }}
+          title: "[DB Migration] ${{ inputs.environment }}"
+          message: "DB Migration to ${{ inputs.environment }} completed successfully!"
+
+      - name: Slack Notification(Failure)
+        uses: ./.github/actions/slack-notification
+        if: failure()
+        with:
+          webhook_url: ${{ secrets.SLACK_NOTIFICATION_WEBHOOK_URL }}
+          title: "[DB Migration] ${{ inputs.environment }}"
+          message: "DB Migration to ${{ inputs.environment }} failed!"

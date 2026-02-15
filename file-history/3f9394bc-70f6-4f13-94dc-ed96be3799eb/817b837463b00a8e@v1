@@ -1,0 +1,60 @@
+import { GraphQLError } from "graphql";
+import type { ContextInject } from "~/context";
+import type { QuizSurveyMapper } from "~/graphql/quiz/schema.mappers";
+import type { SubmitQuizSurveyInput } from "~/graphql/types.generated";
+import { assertAuthenticated } from "~/utils/assertAuthenticated";
+
+export class QuizDataSource {
+  private context: ContextInject;
+
+  public constructor(context: ContextInject) {
+    this.context = context;
+  }
+
+  // クイズアンケートの回答状況を取得する。
+  public async getQuizSurveyStatus(
+    identifier: string,
+  ): Promise<{ hasAnswered: boolean }> {
+    const uid = assertAuthenticated(this.context.uid);
+    const repo = this.context.repository.quiz;
+
+    const existingSurvey = await repo.findUniqueQuizSurveyByUserIdAndIdentifier(
+      {
+        userId: uid,
+        identifier,
+      },
+    );
+
+    return {
+      hasAnswered: !!existingSurvey,
+    };
+  }
+
+  // クイズアンケートを送信する。
+  public async submitQuizSurvey(
+    input: SubmitQuizSurveyInput,
+  ): Promise<QuizSurveyMapper> {
+    const uid = assertAuthenticated(this.context.uid);
+    const repo = this.context.repository.quiz;
+
+    const existingSurvey = await repo.findUniqueQuizSurveyByUserIdAndIdentifier(
+      {
+        userId: uid,
+        identifier: input.identifier,
+      },
+    );
+    if (existingSurvey) {
+      throw new GraphQLError("Quiz survey has already been answered", {
+        extensions: { code: "QUIZ_SURVEY_ALREADY_EXISTS" },
+      });
+    }
+
+    return await repo.createQuizSurvey({
+      userId: uid,
+      identifier: input.identifier,
+      gender: input.gender,
+      age: input.age,
+      prefectureCode: input.prefectureCode,
+    });
+  }
+}

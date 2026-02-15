@@ -1,0 +1,160 @@
+import type { Prisma } from "@/prisma/generated";
+import { randomUUID } from "node:crypto";
+import { prisma } from "~/utils/prisma";
+import { defaultOption, type Option } from "./utils";
+
+export class BusinessCardRepository {
+  public async withTransaction<T>(
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  ) {
+    return prisma.$transaction(fn);
+  }
+
+  public async findUniqueUser(uid: string) {
+    return prisma.user.findUnique({
+      where: { id: uid },
+    });
+  }
+
+  public async findUniqueCheckinCodeWithCertificate(
+    id: string,
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+
+    return tx.checkinCode.findUnique({
+      where: { id },
+      include: { certificate: true },
+    });
+  }
+
+  public async upsertCheckinTransaction(
+    args: {
+      checkinCodeId: string;
+      eventId: number;
+      uid: string;
+      now: Date;
+      tenantId: string;
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { checkinCodeId, eventId, uid, now, tenantId } = args;
+
+    return tx.checkinTransaction.upsert({
+      where: {
+        checkinCodeId_eventId_userId: {
+          checkinCodeId: checkinCodeId,
+          eventId: eventId,
+          userId: uid,
+        },
+      },
+      update: {},
+      create: {
+        userId: uid,
+        eventId: eventId,
+        checkinCodeId: checkinCodeId,
+        receivedAt: now,
+        createdAt: now,
+        updatedAt: now,
+        tenantId,
+      },
+    });
+  }
+
+  public async findFirstUserCertificate(
+    checkinTransactionId: number,
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+
+    return tx.userCertificate.findFirst({
+      where: { checkinTransactionId },
+    });
+  }
+
+  public async createUserCertificate(
+    args: {
+      checkinTransactionId: number;
+      uid: string;
+      imageURL: string;
+      tenantId: string;
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { checkinTransactionId, uid, imageURL, tenantId } = args;
+
+    return tx.userCertificate.create({
+      data: {
+        checkinTransactionId,
+        userId: uid,
+        imageURL,
+        tenantId,
+      },
+    });
+  }
+
+  public async createUserTradingCard(
+    args: {
+      uid: string;
+      tradingCardId: string;
+      checkinTransactionId: number;
+      tenantId: string;
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { uid, tradingCardId, checkinTransactionId, tenantId } = args;
+
+    return tx.userTradingCard.create({
+      data: {
+        id: randomUUID().split("-").join(""),
+        userId: uid,
+        tradingCardId,
+        checkinTransactionId,
+        tenantId,
+      },
+    });
+  }
+
+  public async findFirstTradingCard(
+    id: string,
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+
+    return tx.tradingCard.findFirst({ where: { id } });
+  }
+
+  public async countUserTradingCard(
+    args: {
+      uid: string;
+      tradingCardId: string;
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { uid, tradingCardId } = args;
+
+    return tx.userTradingCard.count({
+      where: { userId: uid, tradingCardId },
+    });
+  }
+
+  public async findManyUserTradingCardWithTradingCard(
+    args: {
+      checkinTransactionId: number;
+      tradingCardId: string;
+    },
+    option: Partial<Option> = defaultOption,
+  ) {
+    const { tx } = { ...defaultOption, ...option };
+    const { checkinTransactionId, tradingCardId } = args;
+
+    return tx.userTradingCard.findMany({
+      where: { checkinTransactionId, tradingCardId },
+      include: { tradingCard: true },
+    });
+  }
+}

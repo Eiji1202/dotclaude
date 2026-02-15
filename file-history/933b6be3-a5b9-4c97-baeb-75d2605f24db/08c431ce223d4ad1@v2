@@ -1,0 +1,121 @@
+# データベースマイグレーション手順書
+
+本プロジェクトでは、CIによる自動マイグレーションではなく、手動でマイグレーションを実行する運用としています。
+マイグレーション実行前にチームへ共有し、レビューを受けてから適用してください。
+
+## 前提条件
+
+### 必要なツール
+
+- **Cloud SQL Proxy**: リモート環境のCloud SQLに接続するために必要
+  - https://cloud.google.com/sql/docs/postgres/connect-instance-auth-proxy
+- **Prisma** (Node.js backend): `pnpm install` でインストール済み
+- **psqldef** (Go backend): `go tool psqldef` で利用可能（Go 1.24+）
+
+### Cloud SQL接続情報
+
+| 環境 | インスタンス | サービスアカウント |
+|------|-------------|-------------------|
+| Dev | `utage3-dev:asia-northeast1:utage3` | `github-service-account@utage3-dev.iam.gserviceaccount.com` |
+| Production | `utage3:asia-northeast1:utage3` | `github-service-account@utage3.iam.gserviceaccount.com` |
+
+## ローカル環境
+
+### Prisma (Node.js backend)
+
+```bash
+cd packages/backend
+docker compose up -d  # PostgreSQL起動
+pnpm prisma:migrate:deploy
+```
+
+### psqldef (Go backend)
+
+```bash
+cd packages/api
+make migrate
+```
+
+デフォルトでは `localhost:5432` の `utage3` データベースに接続します。
+
+## Dev環境
+
+### 1. Cloud SQL Proxyの起動
+
+```bash
+# GCPの認証
+gcloud auth login
+
+# Cloud SQL Proxy起動
+cloud-sql-proxy utage3-dev:asia-northeast1:utage3 --port=15432
+```
+
+### 2. dry-runで確認
+
+マイグレーション適用前に必ずdry-runで差分を確認してください。
+
+#### Prisma (Node.js backend)
+
+```bash
+cd packages/backend
+DATABASE_URL="postgresql://<user>:<password>@localhost:15432/utage3" pnpm prisma:migrate:deploy
+```
+
+#### psqldef (Go backend)
+
+```bash
+cd packages/api
+make migrate POSTGRES_HOST=localhost POSTGRES_USER=<user> POSTGRES_PASSWORD=<password> EXTRA_ARGS="--dry-run"
+```
+
+### 3. 適用
+
+dry-runの結果を確認し、問題なければ `--dry-run` を外して実行します。
+
+#### psqldef (Go backend)
+
+```bash
+cd packages/api
+make migrate POSTGRES_HOST=localhost POSTGRES_USER=<user> POSTGRES_PASSWORD=<password>
+```
+
+## Production環境
+
+### 1. Cloud SQL Proxyの起動
+
+```bash
+# GCPの認証
+gcloud auth login
+
+# Cloud SQL Proxy起動
+cloud-sql-proxy utage3:asia-northeast1:utage3 --port=15432
+```
+
+### 2. dry-runで確認（必須）
+
+本番環境では必ずdry-runを行い、チームメンバーにレビューしてもらってください。
+
+#### Prisma (Node.js backend)
+
+```bash
+cd packages/backend
+DATABASE_URL="postgresql://<user>:<password>@localhost:15432/utage3" pnpm prisma:migrate:deploy
+```
+
+#### psqldef (Go backend)
+
+```bash
+cd packages/api
+make migrate POSTGRES_HOST=localhost POSTGRES_USER=<user> POSTGRES_PASSWORD=<password> EXTRA_ARGS="--dry-run"
+```
+
+### 3. レビュー・適用
+
+dry-runの結果をチームに共有し、レビューを受けてから適用します。
+
+## 運用ルール
+
+1. マイグレーション実行前にチームへ共有する
+2. dry-runで差分を確認する
+3. Production環境はレビューを受けてから適用する
+4. マイグレーション完了後、結果をチームに報告する

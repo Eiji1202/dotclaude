@@ -1,0 +1,13 @@
+import type { Certificate } from "@/prisma/generated";
+
+export function createCertificateMock(
+  overrides: Partial<Certificate> = {},
+): Certificate {
+  return {
+    id: 1,
+    imageURL: "certificate.jpg",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}

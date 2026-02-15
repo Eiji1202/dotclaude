@@ -1,0 +1,61 @@
+"use server";
+
+import type { createEventSetListSchema } from "@/app/event/setlist/schema";
+import { prisma } from "@/lib/prisma";
+import type { z } from "zod";
+
+export async function getEventSetList() {
+  return prisma.eventSetlist.findMany({
+    orderBy: { id: "desc" },
+    include: {
+      event: true,
+    },
+  });
+}
+
+export async function getEventList() {
+  return prisma.event.findMany({
+    orderBy: { id: "desc" },
+    select: {
+      id: true,
+      name: true,
+    },
+  });
+}
+
+export async function upsertEventSetlist(
+  data: z.infer<typeof createEventSetListSchema>,
+) {
+  const isUpdate = data.id != null;
+
+  if (isUpdate) {
+    await prisma.eventSetlist.update({
+      where: { id: Number(data.id) },
+      data: {
+        id: Number(data.id),
+        eventId: Number(data.eventId),
+        artistName: data.artistName,
+        content: data.content,
+        notificationDuration: data.notificationDuration,
+        appleMusicURL: data.appleMusicURL,
+        spotifyURL: data.spotifyURL,
+        publishedAt: data.publishedAt ? new Date(data.publishedAt) : null,
+      },
+    });
+    return;
+  }
+
+  await prisma.eventSetlist.create({
+    data: {
+      eventId: Number(data.eventId),
+      artistName: data.artistName,
+      content: data.content,
+      notificationDuration: data.notificationDuration,
+      appleMusicURL: data.appleMusicURL,
+      spotifyURL: data.spotifyURL,
+      publishedAt: data.publishedAt ? new Date(data.publishedAt) : null,
+      // TODO: Phase 2でコンテキストからtenantIdを取得する
+      tenantId: "default-tenant",
+    },
+  });
+}
