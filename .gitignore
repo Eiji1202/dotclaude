@@ -5,3 +5,4 @@ sotods/
 todos/
 sessions/
 *.tmp
+.DS_Store
