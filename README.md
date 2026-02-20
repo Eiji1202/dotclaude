@@ -7,6 +7,7 @@ Claude Code（`~/.claude/`）の個人設定を管理するリポジトリです
 - `rules/` — 全セッションで適用されるルール（セキュリティ、Git ワークフロー）
 - `commands/` — スラッシュコマンド（`/plan`、`/code-review`）
 - `plugins/` — インストール済みプラグイン設定
+- `skills/` - 特定タスクの専門知識
 - `settings.json` — パーミッション、hooks 設定
 
 ## セットアップ
